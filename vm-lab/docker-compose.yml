@@ -89,11 +89,13 @@ services:
       - DOMAIN=${DOMAIN}
       - DATABASE_URL=postgresql://lab:${LAB_DB_PASS}@postgres:5432/lab
       - SSH_PRIVATE_KEY_PATH=/app/keys/id_ed25519
+      - RECORDINGS_DIR=/var/lib/vm-lab/recordings
     volumes:
       - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
       - /var/lib/libvirt/images:/var/lib/libvirt/images
       - /var/run/docker.sock:/var/run/docker.sock
       - ./lti/keys:/app/keys:ro
+      - session_recordings:/var/lib/vm-lab/recordings
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.api.rule=Host(`api.${DOMAIN}`)"
@@ -178,3 +180,9 @@ volumes:
   postgres_data:
   redis_data:
   traefik_logs:
+  session_recordings:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/vm-lab/recordings

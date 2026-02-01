@@ -280,6 +280,71 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- ============================================================================
+-- Session Recordings
+-- ============================================================================
+-- Stores metadata about terminal session recordings
+
+CREATE TABLE IF NOT EXISTS session_recordings (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(64) NOT NULL REFERENCES vm_sessions(session_id),
+
+    -- Student information (denormalized for easy querying)
+    user_id VARCHAR(255),
+    user_email VARCHAR(255),
+    user_name VARCHAR(255),
+
+    -- Course context
+    course_id VARCHAR(255),
+    course_title VARCHAR(255),
+    assignment_id VARCHAR(255),
+    assignment_title VARCHAR(255),
+
+    -- Recording file paths
+    recording_path TEXT NOT NULL,        -- Path to typescript file
+    timing_path TEXT,                    -- Path to timing file (for playback)
+
+    -- Recording metadata
+    started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    ended_at TIMESTAMP WITH TIME ZONE,
+    duration_seconds INTEGER,
+    file_size_bytes BIGINT,
+
+    -- Status
+    status VARCHAR(32) DEFAULT 'recording',
+
+    CONSTRAINT valid_recording_status CHECK (status IN ('recording', 'completed', 'error'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_recordings_session ON session_recordings(session_id);
+CREATE INDEX IF NOT EXISTS idx_recordings_user ON session_recordings(user_email);
+CREATE INDEX IF NOT EXISTS idx_recordings_user_name ON session_recordings(user_name);
+CREATE INDEX IF NOT EXISTS idx_recordings_course ON session_recordings(course_id);
+CREATE INDEX IF NOT EXISTS idx_recordings_date ON session_recordings(started_at);
+CREATE INDEX IF NOT EXISTS idx_recordings_status ON session_recordings(status);
+
+-- View for easy recording lookup with full context
+CREATE OR REPLACE VIEW recording_details AS
+SELECT
+    r.id,
+    r.session_id,
+    r.user_name,
+    r.user_email,
+    r.course_title,
+    r.assignment_title,
+    r.recording_path,
+    r.timing_path,
+    r.started_at,
+    r.ended_at,
+    r.duration_seconds,
+    r.file_size_bytes,
+    r.status,
+    s.vm_ip,
+    s.url
+FROM session_recordings r
+JOIN vm_sessions s ON r.session_id = s.session_id
+ORDER BY r.started_at DESC;
+
 -- Grant permissions
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO lab;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO lab;

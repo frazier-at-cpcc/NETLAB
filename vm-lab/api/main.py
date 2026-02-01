@@ -5,6 +5,7 @@ Manages the lifecycle of student VMs:
 - Provisioning new VMs from QCOW2 templates
 - Spawning ttyd containers for web terminal access
 - Session management and cleanup
+- Session recording for audit/review
 """
 
 import os
@@ -14,12 +15,16 @@ import string
 import subprocess
 import logging
 import asyncio
+import json
+import re
 from typing import Optional, List
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 import asyncpg
 import docker
@@ -42,6 +47,9 @@ VM_RAM_MB = int(os.getenv("VM_RAM_MB", "16384"))
 VM_VCPUS = int(os.getenv("VM_VCPUS", "4"))
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://lab:lab@localhost:5432/lab")
 SSH_PRIVATE_KEY_PATH = os.getenv("SSH_PRIVATE_KEY_PATH", "/app/keys/id_ed25519")
+
+# Session recordings directory
+RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/var/lib/vm-lab/recordings")
 
 # VM network configuration
 VM_NETWORK_NAME = "lab-net"
@@ -88,6 +96,25 @@ class SessionList(BaseModel):
     total: int
 
 
+class Recording(BaseModel):
+    id: int
+    session_id: str
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
+    course_title: Optional[str] = None
+    assignment_title: Optional[str] = None
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+    duration_seconds: Optional[int] = None
+    file_size_bytes: Optional[int] = None
+    status: str
+
+
+class RecordingList(BaseModel):
+    recordings: List[Recording]
+    total: int
+
+
 # ============================================================================
 # Application Setup
 # ============================================================================
@@ -101,6 +128,10 @@ libvirt_conn: Optional[libvirt.virConnect] = None
 async def lifespan(app: FastAPI):
     """Application lifespan - setup and teardown."""
     global docker_client, libvirt_conn
+
+    # Create recordings directory
+    os.makedirs(RECORDINGS_DIR, exist_ok=True)
+    logger.info(f"Recordings directory: {RECORDINGS_DIR}")
 
     # Setup database pool
     app.state.db = await asyncpg.create_pool(
@@ -164,7 +195,40 @@ app.add_middleware(
 def generate_session_id(length: int = 8) -> str:
     """Generate a random alphanumeric session ID."""
     chars = string.ascii_lowercase + string.digits
-    return ''.join(secrets.choice(chars) for _ in length)
+    return ''.join(secrets.choice(chars) for _ in range(length))
+
+
+def sanitize_filename(name: str) -> str:
+    """Sanitize a string for use in filenames."""
+    if not name:
+        return "unknown"
+    # Replace spaces and special chars with underscores
+    sanitized = re.sub(r'[^\w\-.]', '_', name)
+    # Remove consecutive underscores
+    sanitized = re.sub(r'_+', '_', sanitized)
+    return sanitized[:50]  # Limit length
+
+
+def get_recording_path(session_id: str, user_email: str, user_name: str, started_at: datetime) -> tuple:
+    """
+    Generate organized recording file paths.
+    Structure: /recordings/YYYY/MM/DD/email_name_sessionid_timestamp.{log,timing}
+    """
+    date_path = started_at.strftime("%Y/%m/%d")
+    timestamp = started_at.strftime("%H%M%S")
+
+    safe_email = sanitize_filename(user_email.split('@')[0] if user_email else "unknown")
+    safe_name = sanitize_filename(user_name)
+
+    base_name = f"{safe_email}_{safe_name}_{session_id}_{timestamp}"
+
+    dir_path = os.path.join(RECORDINGS_DIR, date_path)
+    os.makedirs(dir_path, exist_ok=True)
+
+    recording_path = os.path.join(dir_path, f"{base_name}.log")
+    timing_path = os.path.join(dir_path, f"{base_name}.timing")
+
+    return recording_path, timing_path
 
 
 async def get_db():
@@ -188,7 +252,6 @@ async def release_ip(db: asyncpg.Pool, session_id: str):
 
 async def log_event(db: asyncpg.Pool, session_id: str, event_type: str, event_data: dict = None):
     """Log a session event."""
-    import json
     await db.execute(
         """
         INSERT INTO vm_session_events (session_id, event_type, event_data)
@@ -196,6 +259,71 @@ async def log_event(db: asyncpg.Pool, session_id: str, event_type: str, event_da
         """,
         session_id, event_type, json.dumps(event_data) if event_data else None
     )
+
+
+async def create_recording_entry(
+    db: asyncpg.Pool,
+    session_id: str,
+    user_id: str,
+    user_email: str,
+    user_name: str,
+    course_id: str,
+    course_title: str,
+    assignment_id: str,
+    assignment_title: str,
+    recording_path: str,
+    timing_path: str
+) -> int:
+    """Create a recording entry in the database."""
+    recording_id = await db.fetchval(
+        """
+        INSERT INTO session_recordings (
+            session_id, user_id, user_email, user_name,
+            course_id, course_title, assignment_id, assignment_title,
+            recording_path, timing_path, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'recording')
+        RETURNING id
+        """,
+        session_id, user_id, user_email, user_name,
+        course_id, course_title, assignment_id, assignment_title,
+        recording_path, timing_path
+    )
+    return recording_id
+
+
+async def finalize_recording(db: asyncpg.Pool, session_id: str):
+    """Finalize a recording when session ends."""
+    # Get recording info
+    recording = await db.fetchrow(
+        "SELECT id, recording_path, timing_path, started_at FROM session_recordings WHERE session_id = $1 AND status = 'recording'",
+        session_id
+    )
+
+    if not recording:
+        return
+
+    # Calculate duration and file size
+    ended_at = datetime.utcnow()
+    duration_seconds = None
+    file_size_bytes = None
+
+    if recording['started_at']:
+        duration_seconds = int((ended_at - recording['started_at']).total_seconds())
+
+    if recording['recording_path'] and os.path.exists(recording['recording_path']):
+        file_size_bytes = os.path.getsize(recording['recording_path'])
+
+    # Update recording
+    await db.execute(
+        """
+        UPDATE session_recordings
+        SET ended_at = $2, duration_seconds = $3, file_size_bytes = $4, status = 'completed'
+        WHERE id = $1
+        """,
+        recording['id'], ended_at, duration_seconds, file_size_bytes
+    )
+
+    logger.info(f"Finalized recording for session {session_id}: {duration_seconds}s, {file_size_bytes} bytes")
 
 
 def create_vm_xml(
@@ -335,9 +463,15 @@ async def wait_for_ssh(ip: str, timeout: int = 120) -> bool:
 def spawn_ttyd_container(
     session_id: str,
     vm_ip: str,
-    domain: str
+    domain: str,
+    recording_path: str,
+    timing_path: str
 ) -> Optional[str]:
-    """Spawn a ttyd container for web terminal access."""
+    """
+    Spawn a ttyd container for web terminal access with session recording.
+
+    Uses the `script` command to record all terminal I/O with timing information.
+    """
     if not docker_client:
         return None
 
@@ -351,10 +485,20 @@ def spawn_ttyd_container(
         except docker.errors.NotFound:
             pass
 
-        # Spawn ttyd container
+        # Create recording directory inside container mount
+        recording_dir = os.path.dirname(recording_path)
+        os.makedirs(recording_dir, exist_ok=True)
+
+        # Command that wraps SSH with script for recording
+        # script -q -f -t<timing_file> <output_file> -c "<command>"
+        # -q = quiet, -f = flush after each write, -t = timing file
+        ssh_command = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /keys/id_ed25519 student@{vm_ip}"
+        script_command = f"script -q -f -t/recordings/{os.path.relpath(timing_path, RECORDINGS_DIR)} /recordings/{os.path.relpath(recording_path, RECORDINGS_DIR)} -c '{ssh_command}'"
+
+        # Spawn ttyd container with recording
         container = docker_client.containers.run(
             "tsl0922/ttyd:latest",
-            command=f"ttyd --writable --port 7681 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /keys/id_ed25519 student@{vm_ip}",
+            command=f"ttyd --writable --port 7681 /bin/sh -c \"{script_command}\"",
             name=container_name,
             detach=True,
             network=DOCKER_NETWORK,
@@ -362,6 +506,10 @@ def spawn_ttyd_container(
                 os.path.dirname(SSH_PRIVATE_KEY_PATH): {
                     'bind': '/keys',
                     'mode': 'ro'
+                },
+                RECORDINGS_DIR: {
+                    'bind': '/recordings',
+                    'mode': 'rw'
                 }
             },
             labels={
@@ -372,11 +520,12 @@ def spawn_ttyd_container(
                 f"traefik.http.services.ttyd-{session_id}.loadbalancer.server.port": "7681",
                 "lab.session_id": session_id,
                 "lab.vm_ip": vm_ip,
+                "lab.recording_path": recording_path,
             },
             restart_policy={"Name": "unless-stopped"}
         )
 
-        logger.info(f"Spawned ttyd container: {container_name}")
+        logger.info(f"Spawned ttyd container with recording: {container_name}")
         return container.id
 
     except docker.errors.APIError as e:
@@ -465,6 +614,9 @@ async def destroy_session_internal(
     overlay_path: str
 ):
     """Internal function to destroy a session."""
+    # Finalize recording before destroying container
+    await finalize_recording(db, session_id)
+
     # Remove ttyd container
     destroy_ttyd_container(session_id)
 
@@ -489,7 +641,7 @@ async def destroy_session_internal(
 
 
 # ============================================================================
-# API Endpoints
+# API Endpoints - Sessions
 # ============================================================================
 
 @app.get("/health")
@@ -526,7 +678,8 @@ async def health():
         "status": status,
         "database": "connected" if db_healthy else "disconnected",
         "libvirt": "connected" if libvirt_healthy else "disconnected",
-        "docker": "connected" if docker_healthy else "disconnected"
+        "docker": "connected" if docker_healthy else "disconnected",
+        "recordings_dir": RECORDINGS_DIR
     }
 
 
@@ -586,6 +739,15 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
         raise HTTPException(status_code=503, detail="No IP addresses available")
 
     logger.info(f"Provisioning VM {vm_name} with IP {vm_ip}")
+
+    # Generate recording paths
+    started_at = datetime.utcnow()
+    recording_path, timing_path = get_recording_path(
+        session_id,
+        request.user_email or "",
+        request.user_name or "",
+        started_at
+    )
 
     # Create overlay QCOW2
     overlay_path = f"/var/lib/libvirt/images/{vm_name}.qcow2"
@@ -656,8 +818,20 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 )
                 return
 
-            # Spawn ttyd container
-            container_id = spawn_ttyd_container(session_id, vm_ip, DOMAIN)
+            # Create recording entry in database
+            await create_recording_entry(
+                db, session_id,
+                request.user_id, request.user_email, request.user_name,
+                request.course_id, request.course_title,
+                request.assignment_id, request.assignment_title,
+                recording_path, timing_path
+            )
+
+            # Spawn ttyd container with recording
+            container_id = spawn_ttyd_container(
+                session_id, vm_ip, DOMAIN,
+                recording_path, timing_path
+            )
 
             if container_id:
                 await db.execute(
@@ -669,8 +843,8 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                     """,
                     session_id, container_id, f"ttyd-{session_id}"
                 )
-                await log_event(db, session_id, 'running')
-                logger.info(f"Session {session_id} is now running")
+                await log_event(db, session_id, 'running', {'recording_path': recording_path})
+                logger.info(f"Session {session_id} is now running with recording")
             else:
                 await db.execute(
                     "UPDATE vm_sessions SET status = 'error', status_message = 'Container spawn failed' WHERE session_id = $1",
@@ -794,6 +968,225 @@ async def extend_session(session_id: str, hours: int = 2):
     return {"status": "extended", "hours": hours}
 
 
+# ============================================================================
+# API Endpoints - Recordings
+# ============================================================================
+
+@app.get("/api/recordings", response_model=RecordingList)
+async def list_recordings(
+    user_email: Optional[str] = None,
+    user_name: Optional[str] = None,
+    course_id: Optional[str] = None,
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    limit: int = 100,
+    offset: int = 0
+):
+    """
+    List session recordings with filtering options.
+
+    Filter by:
+    - user_email: Student email address
+    - user_name: Student name (partial match)
+    - course_id: Course identifier
+    - date_from/date_to: Date range
+    """
+    db = await get_db()
+
+    conditions = []
+    params = []
+    param_count = 0
+
+    if user_email:
+        param_count += 1
+        conditions.append(f"user_email ILIKE ${param_count}")
+        params.append(f"%{user_email}%")
+
+    if user_name:
+        param_count += 1
+        conditions.append(f"user_name ILIKE ${param_count}")
+        params.append(f"%{user_name}%")
+
+    if course_id:
+        param_count += 1
+        conditions.append(f"course_id = ${param_count}")
+        params.append(course_id)
+
+    if date_from:
+        param_count += 1
+        conditions.append(f"started_at >= ${param_count}::date")
+        params.append(date_from)
+
+    if date_to:
+        param_count += 1
+        conditions.append(f"started_at < (${param_count}::date + interval '1 day')")
+        params.append(date_to)
+
+    where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+    # Get total count
+    count_query = f"SELECT COUNT(*) FROM session_recordings WHERE {where_clause}"
+    total = await db.fetchval(count_query, *params)
+
+    # Get recordings
+    param_count += 1
+    limit_param = param_count
+    param_count += 1
+    offset_param = param_count
+
+    query = f"""
+        SELECT id, session_id, user_name, user_email, course_title, assignment_title,
+               started_at, ended_at, duration_seconds, file_size_bytes, status
+        FROM session_recordings
+        WHERE {where_clause}
+        ORDER BY started_at DESC
+        LIMIT ${limit_param} OFFSET ${offset_param}
+    """
+
+    rows = await db.fetch(query, *params, limit, offset)
+
+    recordings = [Recording(**dict(row)) for row in rows]
+
+    return RecordingList(recordings=recordings, total=total)
+
+
+@app.get("/api/recordings/{recording_id}")
+async def get_recording(recording_id: int):
+    """Get details of a specific recording."""
+    db = await get_db()
+
+    row = await db.fetchrow(
+        """
+        SELECT r.*, s.vm_ip, s.url
+        FROM session_recordings r
+        LEFT JOIN vm_sessions s ON r.session_id = s.session_id
+        WHERE r.id = $1
+        """,
+        recording_id
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    return dict(row)
+
+
+@app.get("/api/recordings/{recording_id}/download")
+async def download_recording(recording_id: int):
+    """Download the raw recording file (typescript log)."""
+    db = await get_db()
+
+    row = await db.fetchrow(
+        "SELECT recording_path, user_email, started_at FROM session_recordings WHERE id = $1",
+        recording_id
+    )
+
+    if not row or not row['recording_path']:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    if not os.path.exists(row['recording_path']):
+        raise HTTPException(status_code=404, detail="Recording file not found on disk")
+
+    # Generate download filename
+    date_str = row['started_at'].strftime("%Y%m%d_%H%M%S") if row['started_at'] else "unknown"
+    email_part = sanitize_filename(row['user_email'].split('@')[0] if row['user_email'] else "unknown")
+    filename = f"recording_{email_part}_{date_str}.log"
+
+    return FileResponse(
+        row['recording_path'],
+        media_type="text/plain",
+        filename=filename
+    )
+
+
+@app.get("/api/recordings/{recording_id}/timing")
+async def download_timing(recording_id: int):
+    """Download the timing file for playback with scriptreplay."""
+    db = await get_db()
+
+    row = await db.fetchrow(
+        "SELECT timing_path, user_email, started_at FROM session_recordings WHERE id = $1",
+        recording_id
+    )
+
+    if not row or not row['timing_path']:
+        raise HTTPException(status_code=404, detail="Timing file not found")
+
+    if not os.path.exists(row['timing_path']):
+        raise HTTPException(status_code=404, detail="Timing file not found on disk")
+
+    date_str = row['started_at'].strftime("%Y%m%d_%H%M%S") if row['started_at'] else "unknown"
+    email_part = sanitize_filename(row['user_email'].split('@')[0] if row['user_email'] else "unknown")
+    filename = f"recording_{email_part}_{date_str}.timing"
+
+    return FileResponse(
+        row['timing_path'],
+        media_type="text/plain",
+        filename=filename
+    )
+
+
+@app.get("/api/recordings/{recording_id}/view")
+async def view_recording(recording_id: int):
+    """
+    View recording contents as plain text.
+    Useful for quick inspection without downloading.
+    """
+    db = await get_db()
+
+    row = await db.fetchrow(
+        "SELECT recording_path FROM session_recordings WHERE id = $1",
+        recording_id
+    )
+
+    if not row or not row['recording_path']:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    if not os.path.exists(row['recording_path']):
+        raise HTTPException(status_code=404, detail="Recording file not found on disk")
+
+    # Read file (limit to 1MB for safety)
+    try:
+        with open(row['recording_path'], 'r', errors='replace') as f:
+            content = f.read(1024 * 1024)  # Max 1MB
+
+        # Strip ANSI escape codes for cleaner text output
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        clean_content = ansi_escape.sub('', content)
+
+        return PlainTextResponse(clean_content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read recording: {e}")
+
+
+@app.get("/api/recordings/by-session/{session_id}")
+async def get_recording_by_session(session_id: str):
+    """Get recording for a specific session."""
+    db = await get_db()
+
+    row = await db.fetchrow(
+        """
+        SELECT id, session_id, user_name, user_email, course_title, assignment_title,
+               started_at, ended_at, duration_seconds, file_size_bytes, status,
+               recording_path, timing_path
+        FROM session_recordings
+        WHERE session_id = $1
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        session_id
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Recording not found for this session")
+
+    return dict(row)
+
+
+# ============================================================================
+# API Endpoints - Statistics
+# ============================================================================
+
 @app.get("/api/stats")
 async def get_stats():
     """Get overall system statistics."""
@@ -810,6 +1203,14 @@ async def get_stats():
         FROM vm_sessions
     """)
 
+    recording_stats = await db.fetchrow("""
+        SELECT
+            COUNT(*) as total_recordings,
+            COUNT(*) FILTER (WHERE status = 'completed') as completed_recordings,
+            COALESCE(SUM(file_size_bytes), 0) as total_recording_bytes
+        FROM session_recordings
+    """)
+
     # Get available IPs
     available_ips = await db.fetchval(
         "SELECT COUNT(*) FROM ip_allocations WHERE session_id IS NULL OR released_at IS NOT NULL"
@@ -824,7 +1225,10 @@ async def get_stats():
         "active_users": stats['active_users'],
         "available_ips": available_ips,
         "vm_ram_mb": VM_RAM_MB,
-        "vm_vcpus": VM_VCPUS
+        "vm_vcpus": VM_VCPUS,
+        "total_recordings": recording_stats['total_recordings'],
+        "completed_recordings": recording_stats['completed_recordings'],
+        "total_recording_size_mb": round(recording_stats['total_recording_bytes'] / (1024 * 1024), 2)
     }
 
 

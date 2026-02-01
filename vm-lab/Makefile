@@ -23,9 +23,14 @@ help:
 	@echo ""
 	@echo "Maintenance:"
 	@echo "  make status    - Show service status"
-	@echo "  make stats     - Show VM statistics"
+	@echo "  make stats     - Show VM and recording statistics"
 	@echo "  make clean     - Remove stopped containers and images"
 	@echo "  make clean-all - Remove everything including volumes"
+	@echo ""
+	@echo "Recordings:"
+	@echo "  make recordings          - List recent recordings"
+	@echo "  make recordings-stats    - Show recording statistics"
+	@echo "  make recordings-cleanup  - Clean old recordings (dry-run)"
 	@echo ""
 	@echo "Development:"
 	@echo "  make test      - Run health checks"
@@ -133,6 +138,27 @@ db-backup:
 	@mkdir -p backups
 	docker-compose exec postgres pg_dumpall -U postgres > backups/backup-$$(date +%Y%m%d-%H%M%S).sql
 	@echo "Backup saved to backups/"
+
+# Recording management
+recordings:
+	@chmod +x scripts/manage-recordings.sh
+	@./scripts/manage-recordings.sh list
+
+recordings-stats:
+	@chmod +x scripts/manage-recordings.sh
+	@./scripts/manage-recordings.sh stats
+
+recordings-cleanup:
+	@chmod +x scripts/manage-recordings.sh
+	@./scripts/manage-recordings.sh cleanup --days 90 --dry-run
+
+recordings-cleanup-force:
+	@chmod +x scripts/manage-recordings.sh
+	@./scripts/manage-recordings.sh cleanup --days 90
+
+recordings-disk:
+	@chmod +x scripts/manage-recordings.sh
+	@./scripts/manage-recordings.sh disk-usage
 
 # Development helpers
 dev-up:

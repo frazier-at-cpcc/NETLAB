@@ -9,6 +9,7 @@ On-demand RHEL virtual machine provisioning with web-based terminal access for s
 - **LTI integration** - Works with Canvas, Blackboard, Moodle, Brightspace
 - **Dual LTI support** - Both LTI 1.1 (OAuth) and LTI 1.3 (OIDC/JWT)
 - **Session persistence** - Students return to the same VM within a course
+- **Session recording** - All terminal sessions recorded for review/audit
 - **Firewall traversal** - Cloudflare Tunnel exposes services securely
 - **Auto-cleanup** - VMs automatically destroyed after session expiry
 
@@ -180,6 +181,71 @@ vm-lab/
    - Tool URL: `https://lti.yourdomain.com/lti/launch`
    - Consumer key: `cpcc-moodle`
    - Shared secret: (from your `.env` file)
+
+## Session Recordings
+
+All terminal sessions are automatically recorded using the Linux `script` command with timing information. This allows instructors to review what students did during their lab sessions.
+
+### Recording Storage
+
+Recordings are stored in `/var/lib/vm-lab/recordings/` organized by date:
+```
+/var/lib/vm-lab/recordings/
+├── 2024/
+│   ├── 01/
+│   │   ├── 15/
+│   │   │   ├── jsmith_John_Smith_abc123_143052.log
+│   │   │   ├── jsmith_John_Smith_abc123_143052.timing
+│   │   │   └── ...
+```
+
+### Recording API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/recordings` | List recordings with filtering |
+| `GET /api/recordings/{id}` | Get recording details |
+| `GET /api/recordings/{id}/download` | Download recording file |
+| `GET /api/recordings/{id}/timing` | Download timing file |
+| `GET /api/recordings/{id}/view` | View recording as text |
+| `GET /api/recordings/by-session/{session_id}` | Get recording for session |
+
+### Filtering Recordings
+
+```bash
+# List all recordings
+curl "http://localhost:8000/api/recordings"
+
+# Filter by student email
+curl "http://localhost:8000/api/recordings?user_email=jsmith@example.com"
+
+# Filter by student name
+curl "http://localhost:8000/api/recordings?user_name=John"
+
+# Filter by course
+curl "http://localhost:8000/api/recordings?course_id=RHEL101"
+
+# Filter by date range
+curl "http://localhost:8000/api/recordings?date_from=2024-01-01&date_to=2024-01-31"
+```
+
+### Replaying Recordings
+
+Recordings can be replayed using `scriptreplay`:
+
+```bash
+# Download recording and timing files
+curl -o session.log "http://localhost:8000/api/recordings/123/download"
+curl -o session.timing "http://localhost:8000/api/recordings/123/timing"
+
+# Replay at original speed
+scriptreplay session.timing session.log
+
+# Replay at 2x speed
+scriptreplay -d 2 session.timing session.log
+```
+
+---
 
 ## API Endpoints
 
