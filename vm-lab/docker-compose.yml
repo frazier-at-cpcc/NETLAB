@@ -1,0 +1,180 @@
+version: '3.8'
+
+services:
+  # Reverse Proxy - Routes traffic to appropriate services
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      - "--api.dashboard=true"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Redirect HTTP to HTTPS
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      # Enable access logs
+      - "--accesslog=true"
+      - "--accesslog.filepath=/var/log/traefik/access.log"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_logs:/var/log/traefik
+    networks:
+      - lab-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN}`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+
+  # LTI Tool Server - Handles LMS authentication (1.1 and 1.3)
+  lti-server:
+    build:
+      context: ./lti
+      dockerfile: Dockerfile
+    container_name: lti-server
+    restart: unless-stopped
+    environment:
+      - ORCHESTRATOR_API=http://lab-api:8000
+      - LTI_BASE_URL=${LTI_BASE_URL}
+      - DOMAIN=${DOMAIN}
+      - DATABASE_URL=postgresql://lti:${LTI_DB_PASS}@postgres:5432/lti
+      # LTI 1.1 Consumer Secrets
+      - LTI11_CANVAS_SECRET=${LTI11_CANVAS_SECRET}
+      - LTI11_BLACKBOARD_SECRET=${LTI11_BLACKBOARD_SECRET}
+      - LTI11_MOODLE_SECRET=${LTI11_MOODLE_SECRET}
+      - LTI11_BRIGHTSPACE_SECRET=${LTI11_BRIGHTSPACE_SECRET}
+      # Session secret for cookies
+      - SESSION_SECRET=${SESSION_SECRET}
+    volumes:
+      - ./lti/keys:/app/keys:ro
+      - ./lti/lti13_config.json:/app/lti13_config.json:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.lti.rule=Host(`lti.${DOMAIN}`)"
+      - "traefik.http.routers.lti.entrypoints=websecure"
+      - "traefik.http.routers.lti.tls=true"
+      - "traefik.http.services.lti.loadbalancer.server.port=8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      lab-api:
+        condition: service_started
+    networks:
+      - lab-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/lti/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # VM Orchestration API - Manages VM lifecycle
+  lab-api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: lab-api
+    restart: unless-stopped
+    privileged: true  # Required for libvirt access
+    environment:
+      - BASE_QCOW=${BASE_QCOW}
+      - VM_RAM_MB=${VM_RAM_MB:-16384}
+      - VM_VCPUS=${VM_VCPUS:-4}
+      - DOMAIN=${DOMAIN}
+      - DATABASE_URL=postgresql://lab:${LAB_DB_PASS}@postgres:5432/lab
+      - SSH_PRIVATE_KEY_PATH=/app/keys/id_ed25519
+    volumes:
+      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      - /var/lib/libvirt/images:/var/lib/libvirt/images
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./lti/keys:/app/keys:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=Host(`api.${DOMAIN}`)"
+      - "traefik.http.routers.api.entrypoints=websecure"
+      - "traefik.http.routers.api.tls=true"
+      - "traefik.http.services.api.loadbalancer.server.port=8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - lab-network
+      - vm-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_MULTIPLE_DATABASES=lti,lab
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./scripts/create-multiple-postgresql-databases.sh:/docker-entrypoint-initdb.d/00-create-dbs.sh:ro
+    networks:
+      - lab-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for session caching and rate limiting
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - lab-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Cloudflare Tunnel - Exposes services without opening firewall
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CF_TUNNEL_TOKEN}
+    networks:
+      - lab-network
+    depends_on:
+      - traefik
+
+networks:
+  lab-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+  vm-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.10.0/24
+
+volumes:
+  postgres_data:
+  redis_data:
+  traefik_logs:

@@ -1,0 +1,20 @@
+# Web framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+
+# HTTP client
+httpx==0.26.0
+
+# Database
+asyncpg==0.29.0
+
+# Session management
+itsdangerous==2.1.2
+starlette==0.35.1
+
+# LTI 1.3 / JWT support
+python-jose[cryptography]==3.3.0
+cryptography>=41.0.0
+
+# Python multipart for form handling
+python-multipart==0.0.6

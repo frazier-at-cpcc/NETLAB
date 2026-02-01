@@ -1,0 +1,23 @@
+{
+    "https://canvas.instructure.com": {
+        "client_id": "REPLACE_WITH_CANVAS_CLIENT_ID",
+        "auth_login_url": "https://canvas.instructure.com/api/lti/authorize_redirect",
+        "auth_token_url": "https://canvas.instructure.com/login/oauth2/token",
+        "key_set_url": "https://canvas.instructure.com/api/lti/security/jwks",
+        "deployment_ids": ["REPLACE_WITH_DEPLOYMENT_ID"]
+    },
+    "https://blackboard.com": {
+        "client_id": "REPLACE_WITH_BLACKBOARD_CLIENT_ID",
+        "auth_login_url": "https://developer.blackboard.com/api/v1/gateway/oidcauth",
+        "auth_token_url": "https://developer.blackboard.com/api/v1/gateway/oauth2/jwttoken",
+        "key_set_url": "https://developer.blackboard.com/.well-known/jwks.json",
+        "deployment_ids": ["REPLACE_WITH_DEPLOYMENT_ID"]
+    },
+    "https://moodle.example.com": {
+        "client_id": "REPLACE_WITH_MOODLE_CLIENT_ID",
+        "auth_login_url": "https://moodle.example.com/mod/lti/auth.php",
+        "auth_token_url": "https://moodle.example.com/mod/lti/token.php",
+        "key_set_url": "https://moodle.example.com/mod/lti/certs.php",
+        "deployment_ids": ["REPLACE_WITH_DEPLOYMENT_ID"]
+    }
+}

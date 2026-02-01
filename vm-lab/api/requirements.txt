@@ -1,0 +1,18 @@
+# Web framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+
+# Database
+asyncpg==0.29.0
+
+# Docker SDK
+docker==7.0.0
+
+# Libvirt bindings
+libvirt-python==10.0.0
+
+# Data validation
+pydantic==2.5.3
+
+# HTTP client (for health checks)
+httpx==0.26.0

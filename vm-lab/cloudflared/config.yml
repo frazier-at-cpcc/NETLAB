@@ -1,0 +1,45 @@
+# ==============================================================================
+# Cloudflare Tunnel Configuration
+# ==============================================================================
+# This file is used when running cloudflared manually (not via token)
+# If using TUNNEL_TOKEN in docker-compose, this file is not needed
+# ==============================================================================
+
+# Tunnel ID (from: cloudflared tunnel create student-labs)
+tunnel: REPLACE_WITH_YOUR_TUNNEL_ID
+
+# Credentials file location
+credentials-file: /root/.cloudflared/REPLACE_WITH_TUNNEL_ID.json
+
+# Ingress rules - route traffic to appropriate services
+ingress:
+  # LTI Server - handles LMS authentication
+  - hostname: lti.yourdomain.com
+    service: http://traefik:80
+
+  # Lab terminals - wildcard for all student VMs
+  - hostname: "*.lab.yourdomain.com"
+    service: http://traefik:80
+
+  # API endpoint (optional - for admin access)
+  - hostname: api.yourdomain.com
+    service: http://traefik:80
+
+  # Traefik dashboard (optional - restrict in production)
+  - hostname: traefik.yourdomain.com
+    service: http://traefik:8080
+
+  # Catch-all rule (required)
+  - service: http_status:404
+
+# Optional: Origin server configuration
+originRequest:
+  # Timeout for establishing connection to origin
+  connectTimeout: 30s
+
+  # Keep-alive settings
+  keepAliveTimeout: 90s
+  keepAliveConnections: 100
+
+  # TLS settings (for connections to origin)
+  noTLSVerify: false
