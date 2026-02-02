@@ -17,8 +17,8 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 
 # Install Python packages (skip libvirt-python since we use system package)
-RUN pip install --no-cache-dir --break-system-packages \
-    $(grep -v libvirt-python requirements.txt | tr '\n' ' ')
+RUN grep -v '^#' requirements.txt | grep -v '^$' | grep -v libvirt-python > /tmp/reqs.txt && \
+    pip install --no-cache-dir --break-system-packages -r /tmp/reqs.txt
 
 # Copy application code
 COPY main.py .
