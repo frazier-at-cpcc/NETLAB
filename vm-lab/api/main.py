@@ -78,6 +78,9 @@ NESTED_SSH_USER = os.getenv("NESTED_SSH_USER", "student")
 NESTED_SSH_HOST = os.getenv("NESTED_SSH_HOST", "workstation")
 NESTED_SSH_PASSWORD = os.getenv("NESTED_SSH_PASSWORD", "student")  # Default RHA student password
 
+# Management network prefix - VMs with multiple NICs should use this network
+MGMT_NETWORK_PREFIX = os.getenv("MGMT_NETWORK_PREFIX", "172.16.120.")
+
 # Session recordings directory
 RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/var/lib/vm-lab/recordings")
 
@@ -487,6 +490,7 @@ def get_vm_ip(proxmox: ProxmoxAPI, vmid: int) -> Optional[str]:
     try:
         # Try guest agent first
         agent_info = proxmox.nodes(PROXMOX_NODE).qemu(vmid).agent('network-get-interfaces').get()
+        all_ips = []
         for iface in agent_info.get('result', []):
             if iface.get('name') == 'lo':
                 continue
@@ -494,7 +498,17 @@ def get_vm_ip(proxmox: ProxmoxAPI, vmid: int) -> Optional[str]:
                 if addr.get('ip-address-type') == 'ipv4':
                     ip = addr.get('ip-address')
                     if ip and not ip.startswith('127.') and not ip.startswith('169.254.'):
-                        return ip
+                        all_ips.append(ip)
+
+        # Prefer management network IP if configured
+        if MGMT_NETWORK_PREFIX:
+            for ip in all_ips:
+                if ip.startswith(MGMT_NETWORK_PREFIX):
+                    return ip
+
+        # Fall back to first available IP
+        if all_ips:
+            return all_ips[0]
     except Exception as e:
         logger.debug(f"Guest agent not available for VM {vmid}: {e}")
 
