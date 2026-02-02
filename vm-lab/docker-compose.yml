@@ -1,39 +1,19 @@
-version: '3.8'
-
 services:
   # Reverse Proxy - Routes traffic to appropriate services
   traefik:
     image: traefik:v3.2
     container_name: traefik
     restart: unless-stopped
-    environment:
-      - DOCKER_API_VERSION=1.44
-    command:
-      - "--api.dashboard=true"
-      - "--api.insecure=true"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      # Redirect HTTP to HTTPS
-      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
-      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
-      # Enable access logs
-      - "--accesslog=true"
-      - "--accesslog.filepath=/var/log/traefik/access.log"
     ports:
       - "80:80"
       - "443:443"
       - "8080:8080"  # Traefik dashboard
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
       - traefik_logs:/var/log/traefik
     networks:
       - lab-network
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN}`)"
-      - "traefik.http.routers.dashboard.service=api@internal"
 
   # LTI Tool Server - Handles LMS authentication (1.1 and 1.3)
   lti-server:

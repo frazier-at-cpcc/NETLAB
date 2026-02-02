@@ -1,0 +1,27 @@
+# Traefik Dynamic Configuration
+http:
+  routers:
+    lti:
+      rule: "Host(`lti.linux.labsconnect.org`) || Host(`lablti.labsconnect.org`)"
+      entryPoints:
+        - websecure
+      service: lti-service
+      tls: {}
+
+    api:
+      rule: "Host(`api.linux.labsconnect.org`)"
+      entryPoints:
+        - websecure
+      service: api-service
+      tls: {}
+
+  services:
+    lti-service:
+      loadBalancer:
+        servers:
+          - url: "http://lti-server:8000"
+
+    api-service:
+      loadBalancer:
+        servers:
+          - url: "http://lab-api:8000"
