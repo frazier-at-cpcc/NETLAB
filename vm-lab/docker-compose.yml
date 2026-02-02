@@ -89,6 +89,7 @@ services:
       - DOMAIN=${DOMAIN}
       - DATABASE_URL=postgresql://lab:${LAB_DB_PASS}@postgres:5432/lab
       - SSH_PRIVATE_KEY_PATH=/app/keys/id_ed25519
+      - SSH_USER=${SSH_USER:-kiosk}
       - RECORDINGS_DIR=/var/lib/vm-lab/recordings
     volumes:
       - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock

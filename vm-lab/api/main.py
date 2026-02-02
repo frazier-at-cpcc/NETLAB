@@ -47,6 +47,7 @@ VM_RAM_MB = int(os.getenv("VM_RAM_MB", "16384"))
 VM_VCPUS = int(os.getenv("VM_VCPUS", "4"))
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://lab:lab@localhost:5432/lab")
 SSH_PRIVATE_KEY_PATH = os.getenv("SSH_PRIVATE_KEY_PATH", "/app/keys/id_ed25519")
+SSH_USER = os.getenv("SSH_USER", "kiosk")
 
 # Session recordings directory
 RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/var/lib/vm-lab/recordings")
@@ -492,7 +493,7 @@ def spawn_ttyd_container(
         # Command that wraps SSH with script for recording
         # script -q -f -t<timing_file> <output_file> -c "<command>"
         # -q = quiet, -f = flush after each write, -t = timing file
-        ssh_command = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /keys/id_ed25519 student@{vm_ip}"
+        ssh_command = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /keys/id_ed25519 {SSH_USER}@{vm_ip}"
         script_command = f"script -q -f -t/recordings/{os.path.relpath(timing_path, RECORDINGS_DIR)} /recordings/{os.path.relpath(recording_path, RECORDINGS_DIR)} -c '{ssh_command}'"
 
         # Spawn ttyd container with recording
