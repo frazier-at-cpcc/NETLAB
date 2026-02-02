@@ -124,6 +124,8 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_MULTIPLE_DATABASES=lti,lab
+      - LTI_DB_PASS=${LTI_DB_PASS}
+      - LAB_DB_PASS=${LAB_DB_PASS}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
