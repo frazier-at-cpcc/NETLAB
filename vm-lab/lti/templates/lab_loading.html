@@ -256,11 +256,12 @@
                         </button>
                     </div>
 
-                    <!-- Stopped State -->
-                    <div id="stopped-state" class="space-y-6" style="display: none;">
+                    <!-- Stopping State -->
+                    <div id="stopping-state" class="space-y-6" style="display: none;">
                         <div class="flex justify-center">
-                            <div class="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center">
-                                <svg class="w-10 h-10 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <div class="w-20 h-20 bg-amber-100 rounded-full flex items-center justify-center relative">
+                                <div class="absolute inset-0 w-20 h-20 border-4 border-amber-200 border-t-amber-500 rounded-full animate-spin"></div>
+                                <svg class="w-8 h-8 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"/>
                                 </svg>
@@ -268,8 +269,40 @@
                         </div>
 
                         <div class="text-center">
-                            <h3 class="text-xl font-bold text-slate-600">Lab Stopped</h3>
-                            <p class="text-slate-500 text-sm mt-1">Your lab environment has been stopped.</p>
+                            <h3 class="text-xl font-bold text-amber-600">Shutting Down</h3>
+                            <p class="text-slate-500 text-sm mt-1">Please wait while your lab environment is being stopped...</p>
+                        </div>
+
+                        <div class="flex justify-center">
+                            <div class="flex items-center gap-2 text-slate-500 text-sm">
+                                <div class="w-2 h-2 bg-amber-500 rounded-full animate-pulse"></div>
+                                <span>Stopping virtual machine</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Stopped State -->
+                    <div id="stopped-state" class="space-y-6" style="display: none;">
+                        <div class="flex justify-center">
+                            <div class="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center">
+                                <svg class="w-10 h-10 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                </svg>
+                            </div>
+                        </div>
+
+                        <div class="text-center">
+                            <h3 class="text-xl font-bold text-emerald-600">Lab Successfully Stopped</h3>
+                            <p class="text-slate-500 text-sm mt-1">Your lab environment has been shut down and resources have been released.</p>
+                        </div>
+
+                        <div class="bg-slate-50 rounded-lg p-4 text-sm text-slate-600">
+                            <p class="flex items-center gap-2">
+                                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                </svg>
+                                To start a new lab session, relaunch from your LMS or click below.
+                            </p>
                         </div>
 
                         <button onclick="window.location.reload()"
@@ -331,7 +364,7 @@
 
         // State management
         function showState(stateName) {
-            ['starting', 'running', 'error', 'stopped'].forEach(state => {
+            ['starting', 'running', 'error', 'stopping', 'stopped'].forEach(state => {
                 const el = document.getElementById(`${state}-state`);
                 if (el) el.style.display = state === stateName ? 'block' : 'none';
             });
@@ -346,6 +379,9 @@
                     break;
                 case 'error':
                     titleEl.textContent = 'Provisioning Failed';
+                    break;
+                case 'stopping':
+                    titleEl.textContent = 'Shutting Down';
                     break;
                 case 'stopped':
                     titleEl.textContent = 'Lab Stopped';
@@ -479,24 +515,27 @@
         }
 
         async function stopSession() {
-            showLoading('Stopping lab...');
+            stopPolling();
+            showState('stopping');
             try {
                 const response = await fetch(config.stopUrl, {
                     method: 'DELETE',
                     credentials: 'include'
                 });
                 if (response.ok) {
-                    showState('stopped');
-                    stopPolling();
+                    // Brief delay to show the stopping animation
+                    setTimeout(() => {
+                        showState('stopped');
+                    }, 1500);
                 } else {
                     const data = await response.json();
                     alert('Failed to stop: ' + (data.detail || 'Unknown error'));
+                    showState('running');
                 }
             } catch (error) {
                 console.error('Error stopping session:', error);
                 alert('Failed to stop session. Please try again.');
-            } finally {
-                hideLoading();
+                showState('running');
             }
         }
 
