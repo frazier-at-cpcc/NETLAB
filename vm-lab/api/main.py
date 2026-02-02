@@ -1,8 +1,8 @@
 """
-VM Orchestration API
+VM Orchestration API - Proxmox Edition
 
-Manages the lifecycle of student VMs:
-- Provisioning new VMs from QCOW2 templates
+Manages the lifecycle of student VMs via Proxmox VE:
+- Cloning VMs from templates
 - Spawning ttyd containers for web terminal access
 - Session management and cleanup
 - Session recording for audit/review
@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 import asyncpg
 import docker
-import libvirt
+from proxmoxer import ProxmoxAPI
 
 # Configure logging
 logging.basicConfig(
@@ -41,20 +41,38 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ============================================================================
 
-DOMAIN = os.getenv("DOMAIN", "lab.yourdomain.com")
-BASE_QCOW = os.getenv("BASE_QCOW", "/var/lib/libvirt/images/rhel-academy-base.qcow2")
+DOMAIN = os.getenv("DOMAIN", "labsconnect.org")
+
+# Proxmox configuration
+PROXMOX_HOST = os.getenv("PROXMOX_HOST", "host1.pm.itdivision.org")
+PROXMOX_PORT = int(os.getenv("PROXMOX_PORT", "8006"))
+PROXMOX_USER = os.getenv("PROXMOX_USER", "root@pam")
+PROXMOX_PASSWORD = os.getenv("PROXMOX_PASSWORD", "")
+PROXMOX_TOKEN_NAME = os.getenv("PROXMOX_TOKEN_NAME", "")  # Optional: use token instead of password
+PROXMOX_TOKEN_VALUE = os.getenv("PROXMOX_TOKEN_VALUE", "")
+PROXMOX_VERIFY_SSL = os.getenv("PROXMOX_VERIFY_SSL", "false").lower() == "true"
+PROXMOX_NODE = os.getenv("PROXMOX_NODE", "host1")  # Proxmox node name
+PROXMOX_STORAGE = os.getenv("PROXMOX_STORAGE", "not-vsan")
+PROXMOX_TEMPLATE_ID = int(os.getenv("PROXMOX_TEMPLATE_ID", "500"))
+PROXMOX_BRIDGE = os.getenv("PROXMOX_BRIDGE", "vmbr0")
+
+# VM resource configuration
 VM_RAM_MB = int(os.getenv("VM_RAM_MB", "16384"))
 VM_VCPUS = int(os.getenv("VM_VCPUS", "4"))
+
+# VM ID range for student VMs (to avoid conflicts)
+VM_ID_START = int(os.getenv("VM_ID_START", "1000"))
+VM_ID_END = int(os.getenv("VM_ID_END", "9999"))
+
+# Database
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://lab:lab@localhost:5432/lab")
+
+# SSH configuration for ttyd
 SSH_PRIVATE_KEY_PATH = os.getenv("SSH_PRIVATE_KEY_PATH", "/app/keys/id_ed25519")
 SSH_USER = os.getenv("SSH_USER", "kiosk")
 
 # Session recordings directory
 RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/var/lib/vm-lab/recordings")
-
-# VM network configuration
-VM_NETWORK_NAME = "lab-net"
-VM_BRIDGE = "virbr1"
 
 # Session defaults
 DEFAULT_SESSION_HOURS = 4
@@ -62,6 +80,9 @@ MAX_SESSION_HOURS = 8
 
 # Docker network for ttyd containers
 DOCKER_NETWORK = "vm-lab_lab-network"
+
+# Traefik dynamic config directory for session routes
+TRAEFIK_DYNAMIC_DIR = os.getenv("TRAEFIK_DYNAMIC_DIR", "/app/traefik-dynamic")
 
 
 # ============================================================================
@@ -83,7 +104,7 @@ class ProvisionRequest(BaseModel):
 class Session(BaseModel):
     session_id: str
     url: str
-    vm_ip: str
+    vm_ip: Optional[str] = None
     status: str
     user_name: Optional[str] = None
     course_title: Optional[str] = None
@@ -116,19 +137,65 @@ class RecordingList(BaseModel):
     total: int
 
 
+class ProvisioningStep(BaseModel):
+    """Represents a step in the provisioning process."""
+    id: str
+    label: str
+    status: str  # 'pending', 'in_progress', 'completed', 'error'
+    message: Optional[str] = None
+
+
+class SessionStatus(BaseModel):
+    """Detailed session status for polling during provisioning."""
+    session_id: str
+    status: str
+    ready: bool
+    url: Optional[str] = None
+    vm_ip: Optional[str] = None
+    error_message: Optional[str] = None
+    steps: List[ProvisioningStep]
+    progress_percent: int
+    estimated_seconds_remaining: Optional[int] = None
+
+
 # ============================================================================
 # Application Setup
 # ============================================================================
 
 # Global connections
 docker_client: Optional[docker.DockerClient] = None
-libvirt_conn: Optional[libvirt.virConnect] = None
+proxmox_api: Optional[ProxmoxAPI] = None
+
+
+def get_proxmox_connection() -> ProxmoxAPI:
+    """Create a new Proxmox API connection."""
+    if PROXMOX_TOKEN_NAME and PROXMOX_TOKEN_VALUE:
+        # Use API token authentication
+        return ProxmoxAPI(
+            PROXMOX_HOST,
+            port=PROXMOX_PORT,
+            user=PROXMOX_USER,
+            token_name=PROXMOX_TOKEN_NAME,
+            token_value=PROXMOX_TOKEN_VALUE,
+            verify_ssl=PROXMOX_VERIFY_SSL,
+            timeout=120  # 2 minute timeout for large VM operations
+        )
+    else:
+        # Use password authentication
+        return ProxmoxAPI(
+            PROXMOX_HOST,
+            port=PROXMOX_PORT,
+            user=PROXMOX_USER,
+            password=PROXMOX_PASSWORD,
+            verify_ssl=PROXMOX_VERIFY_SSL,
+            timeout=120  # 2 minute timeout for large VM operations
+        )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - setup and teardown."""
-    global docker_client, libvirt_conn
+    global docker_client, proxmox_api
 
     # Create recordings directory
     os.makedirs(RECORDINGS_DIR, exist_ok=True)
@@ -146,13 +213,15 @@ async def lifespan(app: FastAPI):
     docker_client = docker.from_env()
     logger.info("Docker client connected")
 
-    # Setup libvirt connection
+    # Setup Proxmox connection
     try:
-        libvirt_conn = libvirt.open("qemu:///system")
-        logger.info("Libvirt connected")
-    except libvirt.libvirtError as e:
-        logger.error(f"Failed to connect to libvirt: {e}")
-        libvirt_conn = None
+        proxmox_api = get_proxmox_connection()
+        # Test connection
+        version = proxmox_api.version.get()
+        logger.info(f"Proxmox connected: {PROXMOX_HOST} (version {version.get('version', 'unknown')})")
+    except Exception as e:
+        logger.error(f"Failed to connect to Proxmox: {e}")
+        proxmox_api = None
 
     # Start cleanup background task
     cleanup_task = asyncio.create_task(cleanup_loop(app.state.db))
@@ -167,15 +236,13 @@ async def lifespan(app: FastAPI):
         pass
 
     await app.state.db.close()
-    if libvirt_conn:
-        libvirt_conn.close()
     logger.info("Connections closed")
 
 
 app = FastAPI(
-    title="Red Hat Academy Lab - VM Orchestration API",
-    description="Manages VM lifecycle for student lab environments",
-    version="1.0.0",
+    title="Red Hat Academy Lab - VM Orchestration API (Proxmox)",
+    description="Manages VM lifecycle for student lab environments via Proxmox VE",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -203,18 +270,13 @@ def sanitize_filename(name: str) -> str:
     """Sanitize a string for use in filenames."""
     if not name:
         return "unknown"
-    # Replace spaces and special chars with underscores
     sanitized = re.sub(r'[^\w\-.]', '_', name)
-    # Remove consecutive underscores
     sanitized = re.sub(r'_+', '_', sanitized)
-    return sanitized[:50]  # Limit length
+    return sanitized[:50]
 
 
 def get_recording_path(session_id: str, user_email: str, user_name: str, started_at: datetime) -> tuple:
-    """
-    Generate organized recording file paths.
-    Structure: /recordings/YYYY/MM/DD/email_name_sessionid_timestamp.{log,timing}
-    """
+    """Generate organized recording file paths."""
     date_path = started_at.strftime("%Y/%m/%d")
     timestamp = started_at.strftime("%H%M%S")
 
@@ -235,20 +297,6 @@ def get_recording_path(session_id: str, user_email: str, user_name: str, started
 async def get_db():
     """Get database connection from pool."""
     return app.state.db
-
-
-async def allocate_ip(db: asyncpg.Pool, session_id: str) -> Optional[str]:
-    """Allocate an IP address from the pool."""
-    result = await db.fetchval(
-        "SELECT allocate_ip($1)",
-        session_id
-    )
-    return result
-
-
-async def release_ip(db: asyncpg.Pool, session_id: str):
-    """Release an IP address back to the pool."""
-    await db.execute("SELECT release_ip($1)", session_id)
 
 
 async def log_event(db: asyncpg.Pool, session_id: str, event_type: str, event_data: dict = None):
@@ -294,7 +342,6 @@ async def create_recording_entry(
 
 async def finalize_recording(db: asyncpg.Pool, session_id: str):
     """Finalize a recording when session ends."""
-    # Get recording info
     recording = await db.fetchrow(
         "SELECT id, recording_path, timing_path, started_at FROM session_recordings WHERE session_id = $1 AND status = 'recording'",
         session_id
@@ -303,7 +350,6 @@ async def finalize_recording(db: asyncpg.Pool, session_id: str):
     if not recording:
         return
 
-    # Calculate duration and file size
     ended_at = datetime.utcnow()
     duration_seconds = None
     file_size_bytes = None
@@ -314,7 +360,6 @@ async def finalize_recording(db: asyncpg.Pool, session_id: str):
     if recording['recording_path'] and os.path.exists(recording['recording_path']):
         file_size_bytes = os.path.getsize(recording['recording_path'])
 
-    # Update recording
     await db.execute(
         """
         UPDATE session_recordings
@@ -327,119 +372,146 @@ async def finalize_recording(db: asyncpg.Pool, session_id: str):
     logger.info(f"Finalized recording for session {session_id}: {duration_seconds}s, {file_size_bytes} bytes")
 
 
-def create_vm_xml(
-    vm_name: str,
-    overlay_path: str,
-    ram_mb: int,
-    vcpus: int,
-    mac_address: str
-) -> str:
-    """Generate libvirt XML for VM definition."""
-    return f"""
-<domain type='kvm'>
-  <name>{vm_name}</name>
-  <uuid></uuid>
-  <memory unit='MiB'>{ram_mb}</memory>
-  <currentMemory unit='MiB'>{ram_mb}</currentMemory>
-  <vcpu placement='static'>{vcpus}</vcpu>
+# ============================================================================
+# Proxmox VM Management
+# ============================================================================
 
-  <os>
-    <type arch='x86_64' machine='q35'>hvm</type>
-    <boot dev='hd'/>
-  </os>
+def allocate_vm_id(proxmox: ProxmoxAPI) -> int:
+    """Allocate a unique VM ID in the allowed range."""
+    # Get list of existing VMs
+    existing_ids = set()
+    for vm in proxmox.cluster.resources.get(type='vm'):
+        existing_ids.add(vm['vmid'])
 
-  <features>
-    <acpi/>
-    <apic/>
-  </features>
+    # Find first available ID in range
+    for vmid in range(VM_ID_START, VM_ID_END):
+        if vmid not in existing_ids:
+            return vmid
 
-  <cpu mode='host-passthrough' check='none'/>
-
-  <clock offset='utc'>
-    <timer name='rtc' tickpolicy='catchup'/>
-    <timer name='pit' tickpolicy='delay'/>
-    <timer name='hpet' present='no'/>
-  </clock>
-
-  <on_poweroff>destroy</on_poweroff>
-  <on_reboot>restart</on_reboot>
-  <on_crash>destroy</on_crash>
-
-  <devices>
-    <emulator>/usr/bin/qemu-system-x86_64</emulator>
-
-    <disk type='file' device='disk'>
-      <driver name='qemu' type='qcow2' cache='writeback' discard='unmap'/>
-      <source file='{overlay_path}'/>
-      <target dev='vda' bus='virtio'/>
-    </disk>
-
-    <interface type='network'>
-      <mac address='{mac_address}'/>
-      <source network='{VM_NETWORK_NAME}'/>
-      <model type='virtio'/>
-    </interface>
-
-    <serial type='pty'>
-      <target port='0'/>
-    </serial>
-    <console type='pty'>
-      <target type='serial' port='0'/>
-    </console>
-
-    <channel type='unix'>
-      <target type='virtio' name='org.qemu.guest_agent.0'/>
-    </channel>
-
-    <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'>
-      <listen type='address' address='127.0.0.1'/>
-    </graphics>
-
-    <video>
-      <model type='virtio' heads='1' primary='yes'/>
-    </video>
-
-    <memballoon model='virtio'/>
-    <rng model='virtio'>
-      <backend model='random'>/dev/urandom</backend>
-    </rng>
-  </devices>
-</domain>
-"""
+    raise Exception("No available VM IDs in range")
 
 
-def generate_mac_address() -> str:
-    """Generate a random MAC address with local admin prefix."""
-    mac = [0x52, 0x54, 0x00,
-           secrets.randbelow(256),
-           secrets.randbelow(256),
-           secrets.randbelow(256)]
-    return ':'.join(f'{b:02x}' for b in mac)
-
-
-async def wait_for_vm_ip(vm_name: str, timeout: int = 120) -> Optional[str]:
-    """Wait for VM to get an IP address via DHCP."""
-    if not libvirt_conn:
-        return None
-
+def wait_for_task(proxmox: ProxmoxAPI, node: str, upid: str, timeout: int = 300) -> bool:
+    """Wait for a Proxmox task to complete."""
     start_time = time.time()
     while time.time() - start_time < timeout:
-        try:
-            dom = libvirt_conn.lookupByName(vm_name)
-            # Get interfaces from guest agent or ARP
-            ifaces = dom.interfaceAddresses(libvirt.VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE)
-            for iface_name, iface_data in ifaces.items():
-                for addr in iface_data.get('addrs', []):
-                    if addr['type'] == 0:  # IPv4
-                        return addr['addr']
-        except libvirt.libvirtError:
-            pass
-        await asyncio.sleep(2)
+        task_status = proxmox.nodes(node).tasks(upid).status.get()
+        if task_status.get('status') == 'stopped':
+            if task_status.get('exitstatus') == 'OK':
+                return True
+            else:
+                raise Exception(f"Task failed: {task_status.get('exitstatus')}")
+        time.sleep(2)
+    raise Exception("Task timeout")
+
+
+def clone_vm(proxmox: ProxmoxAPI, session_id: str, vm_name: str) -> int:
+    """Clone a VM from the template."""
+    vmid = allocate_vm_id(proxmox)
+
+    logger.info(f"Cloning template {PROXMOX_TEMPLATE_ID} to VM {vmid} ({vm_name})")
+
+    # Clone the template - returns a task ID (UPID)
+    upid = proxmox.nodes(PROXMOX_NODE).qemu(PROXMOX_TEMPLATE_ID).clone.post(
+        newid=vmid,
+        name=vm_name,
+        target=PROXMOX_NODE,
+        full=1,  # Full clone (not linked)
+        storage=PROXMOX_STORAGE
+    )
+
+    # Wait for clone task to complete
+    logger.info(f"Waiting for clone task {upid} to complete...")
+    wait_for_task(proxmox, PROXMOX_NODE, upid, timeout=600)  # 10 min for large images
+    logger.info(f"Clone completed for VM {vmid}")
+
+    # Configure the cloned VM
+    proxmox.nodes(PROXMOX_NODE).qemu(vmid).config.put(
+        memory=VM_RAM_MB,
+        cores=VM_VCPUS,
+        net0=f"virtio,bridge={PROXMOX_BRIDGE}",
+        description=f"Student lab VM - Session: {session_id}"
+    )
+
+    return vmid
+
+
+def start_vm(proxmox: ProxmoxAPI, vmid: int):
+    """Start a VM."""
+    logger.info(f"Starting VM {vmid}")
+    proxmox.nodes(PROXMOX_NODE).qemu(vmid).status.start.post()
+
+
+def stop_vm(proxmox: ProxmoxAPI, vmid: int):
+    """Stop a VM."""
+    logger.info(f"Stopping VM {vmid}")
+    try:
+        proxmox.nodes(PROXMOX_NODE).qemu(vmid).status.stop.post()
+    except Exception as e:
+        logger.warning(f"Failed to stop VM {vmid}: {e}")
+
+
+def destroy_vm(proxmox: ProxmoxAPI, vmid: int):
+    """Destroy a VM."""
+    logger.info(f"Destroying VM {vmid}")
+    try:
+        # Stop first if running
+        status = proxmox.nodes(PROXMOX_NODE).qemu(vmid).status.current.get()
+        if status.get('status') == 'running':
+            proxmox.nodes(PROXMOX_NODE).qemu(vmid).status.stop.post()
+            time.sleep(5)
+
+        # Delete the VM
+        proxmox.nodes(PROXMOX_NODE).qemu(vmid).delete()
+        logger.info(f"VM {vmid} destroyed")
+    except Exception as e:
+        logger.error(f"Failed to destroy VM {vmid}: {e}")
+
+
+def get_vm_ip(proxmox: ProxmoxAPI, vmid: int) -> Optional[str]:
+    """Get VM IP address from Proxmox guest agent or network info."""
+    try:
+        # Try guest agent first
+        agent_info = proxmox.nodes(PROXMOX_NODE).qemu(vmid).agent('network-get-interfaces').get()
+        for iface in agent_info.get('result', []):
+            if iface.get('name') == 'lo':
+                continue
+            for addr in iface.get('ip-addresses', []):
+                if addr.get('ip-address-type') == 'ipv4':
+                    ip = addr.get('ip-address')
+                    if ip and not ip.startswith('127.') and not ip.startswith('169.254.'):
+                        return ip
+    except Exception as e:
+        logger.debug(f"Guest agent not available for VM {vmid}: {e}")
+
+    # Try getting from VM config/status (if DHCP lease is visible)
+    try:
+        # Check if there's network info in the status
+        status = proxmox.nodes(PROXMOX_NODE).qemu(vmid).status.current.get()
+        # Some setups expose IP in status
+        if 'ip' in status:
+            return status['ip']
+    except Exception:
+        pass
 
     return None
 
 
-async def wait_for_ssh(ip: str, timeout: int = 120) -> bool:
+async def wait_for_vm_ip(proxmox: ProxmoxAPI, vmid: int, timeout: int = 300) -> Optional[str]:
+    """Wait for VM to get an IP address."""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        ip = get_vm_ip(proxmox, vmid)
+        if ip:
+            logger.info(f"VM {vmid} got IP: {ip}")
+            return ip
+        await asyncio.sleep(5)
+
+    logger.warning(f"VM {vmid} did not get IP after {timeout}s")
+    return None
+
+
+async def wait_for_ssh(ip: str, timeout: int = 300) -> bool:
     """Wait for SSH to become available on the VM."""
     import socket
 
@@ -451,14 +523,53 @@ async def wait_for_ssh(ip: str, timeout: int = 120) -> bool:
             result = sock.connect_ex((ip, 22))
             sock.close()
             if result == 0:
-                # Give SSH a moment to fully initialize
                 await asyncio.sleep(2)
                 return True
         except socket.error:
             pass
-        await asyncio.sleep(2)
+        await asyncio.sleep(5)
 
     return False
+
+
+# ============================================================================
+# Docker/Traefik Management
+# ============================================================================
+
+def write_traefik_route(session_id: str, container_name: str, domain: str):
+    """Write a Traefik route config file for a ttyd session."""
+    route_file = os.path.join(TRAEFIK_DYNAMIC_DIR, f"session-{session_id}.yml")
+    config = f"""# Auto-generated route for session {session_id}
+http:
+  routers:
+    ttyd-{session_id}:
+      rule: "Host(`lab-{session_id}.{domain}`)"
+      entryPoints:
+        - web
+      service: ttyd-{session_id}
+  services:
+    ttyd-{session_id}:
+      loadBalancer:
+        servers:
+          - url: "http://{container_name}:7681"
+"""
+    try:
+        with open(route_file, 'w') as f:
+            f.write(config)
+        logger.info(f"Wrote Traefik route config: {route_file}")
+    except Exception as e:
+        logger.error(f"Failed to write Traefik route config: {e}")
+
+
+def delete_traefik_route(session_id: str):
+    """Delete the Traefik route config file for a session."""
+    route_file = os.path.join(TRAEFIK_DYNAMIC_DIR, f"session-{session_id}.yml")
+    try:
+        if os.path.exists(route_file):
+            os.remove(route_file)
+            logger.info(f"Deleted Traefik route config: {route_file}")
+    except Exception as e:
+        logger.error(f"Failed to delete Traefik route config: {e}")
 
 
 def spawn_ttyd_container(
@@ -468,11 +579,7 @@ def spawn_ttyd_container(
     recording_path: str,
     timing_path: str
 ) -> Optional[str]:
-    """
-    Spawn a ttyd container for web terminal access with session recording.
-
-    Uses the `script` command to record all terminal I/O with timing information.
-    """
+    """Spawn a ttyd container for web terminal access with session recording."""
     if not docker_client:
         return None
 
@@ -486,13 +593,11 @@ def spawn_ttyd_container(
         except docker.errors.NotFound:
             pass
 
-        # Create recording directory inside container mount
+        # Create recording directory
         recording_dir = os.path.dirname(recording_path)
         os.makedirs(recording_dir, exist_ok=True)
 
         # Command that wraps SSH with script for recording
-        # script -q -f -t<timing_file> <output_file> -c "<command>"
-        # -q = quiet, -f = flush after each write, -t = timing file
         ssh_command = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /keys/id_ed25519 {SSH_USER}@{vm_ip}"
         script_command = f"script -q -f -t/recordings/{os.path.relpath(timing_path, RECORDINGS_DIR)} /recordings/{os.path.relpath(recording_path, RECORDINGS_DIR)} -c '{ssh_command}'"
 
@@ -514,17 +619,15 @@ def spawn_ttyd_container(
                 }
             },
             labels={
-                "traefik.enable": "true",
-                f"traefik.http.routers.ttyd-{session_id}.rule": f"Host(`lab-{session_id}.{domain}`)",
-                f"traefik.http.routers.ttyd-{session_id}.entrypoints": "websecure",
-                f"traefik.http.routers.ttyd-{session_id}.tls": "true",
-                f"traefik.http.services.ttyd-{session_id}.loadbalancer.server.port": "7681",
                 "lab.session_id": session_id,
                 "lab.vm_ip": vm_ip,
                 "lab.recording_path": recording_path,
             },
             restart_policy={"Name": "unless-stopped"}
         )
+
+        # Write Traefik route config file
+        write_traefik_route(session_id, container_name, domain)
 
         logger.info(f"Spawned ttyd container with recording: {container_name}")
         return container.id
@@ -535,7 +638,9 @@ def spawn_ttyd_container(
 
 
 def destroy_ttyd_container(session_id: str):
-    """Remove ttyd container."""
+    """Remove ttyd container and its Traefik route."""
+    delete_traefik_route(session_id)
+
     if not docker_client:
         return
 
@@ -549,27 +654,6 @@ def destroy_ttyd_container(session_id: str):
         pass
     except docker.errors.APIError as e:
         logger.error(f"Failed to remove ttyd container: {e}")
-
-
-def destroy_vm(vm_name: str, overlay_path: str):
-    """Destroy VM and remove overlay disk."""
-    if libvirt_conn:
-        try:
-            dom = libvirt_conn.lookupByName(vm_name)
-            if dom.isActive():
-                dom.destroy()
-            dom.undefine()
-            logger.info(f"Destroyed VM: {vm_name}")
-        except libvirt.libvirtError as e:
-            logger.error(f"Failed to destroy VM {vm_name}: {e}")
-
-    # Remove overlay file
-    if overlay_path and os.path.exists(overlay_path):
-        try:
-            os.remove(overlay_path)
-            logger.info(f"Removed overlay: {overlay_path}")
-        except OSError as e:
-            logger.error(f"Failed to remove overlay {overlay_path}: {e}")
 
 
 # ============================================================================
@@ -592,7 +676,7 @@ async def cleanup_expired_sessions(db: asyncpg.Pool):
     """Find and destroy expired sessions."""
     expired = await db.fetch(
         """
-        SELECT session_id, vm_name, overlay_path
+        SELECT session_id, vm_id
         FROM vm_sessions
         WHERE status = 'running' AND expires_at < CURRENT_TIMESTAMP
         """
@@ -600,20 +684,10 @@ async def cleanup_expired_sessions(db: asyncpg.Pool):
 
     for row in expired:
         logger.info(f"Cleaning up expired session: {row['session_id']}")
-        await destroy_session_internal(
-            db,
-            row['session_id'],
-            row['vm_name'],
-            row['overlay_path']
-        )
+        await destroy_session_internal(db, row['session_id'], row['vm_id'])
 
 
-async def destroy_session_internal(
-    db: asyncpg.Pool,
-    session_id: str,
-    vm_name: str,
-    overlay_path: str
-):
+async def destroy_session_internal(db: asyncpg.Pool, session_id: str, vm_id: int):
     """Internal function to destroy a session."""
     # Finalize recording before destroying container
     await finalize_recording(db, session_id)
@@ -621,11 +695,12 @@ async def destroy_session_internal(
     # Remove ttyd container
     destroy_ttyd_container(session_id)
 
-    # Destroy VM
-    destroy_vm(vm_name, overlay_path)
-
-    # Release IP
-    await release_ip(db, session_id)
+    # Destroy VM in Proxmox
+    if vm_id and proxmox_api:
+        try:
+            destroy_vm(proxmox_api, vm_id)
+        except Exception as e:
+            logger.error(f"Failed to destroy VM {vm_id}: {e}")
 
     # Update database
     await db.execute(
@@ -637,7 +712,6 @@ async def destroy_session_internal(
         session_id
     )
 
-    # Log event
     await log_event(db, session_id, 'destroyed')
 
 
@@ -649,7 +723,7 @@ async def destroy_session_internal(
 async def health():
     """Health check endpoint."""
     db_healthy = False
-    libvirt_healthy = False
+    proxmox_healthy = False
     docker_healthy = False
 
     try:
@@ -659,11 +733,11 @@ async def health():
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
 
-    if libvirt_conn:
+    if proxmox_api:
         try:
-            libvirt_conn.getHostname()
-            libvirt_healthy = True
-        except libvirt.libvirtError:
+            proxmox_api.version.get()
+            proxmox_healthy = True
+        except Exception:
             pass
 
     if docker_client:
@@ -673,13 +747,15 @@ async def health():
         except docker.errors.APIError:
             pass
 
-    status = "healthy" if all([db_healthy, libvirt_healthy, docker_healthy]) else "degraded"
+    status = "healthy" if all([db_healthy, proxmox_healthy, docker_healthy]) else "degraded"
 
     return {
         "status": status,
         "database": "connected" if db_healthy else "disconnected",
-        "libvirt": "connected" if libvirt_healthy else "disconnected",
+        "proxmox": "connected" if proxmox_healthy else "disconnected",
         "docker": "connected" if docker_healthy else "disconnected",
+        "proxmox_host": PROXMOX_HOST,
+        "proxmox_node": PROXMOX_NODE,
         "recordings_dir": RECORDINGS_DIR
     }
 
@@ -702,7 +778,6 @@ async def get_session_by_key(session_key: str):
     if not row:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Update last accessed time
     await db.execute(
         "UPDATE vm_sessions SET last_accessed = CURRENT_TIMESTAMP WHERE session_key = $1",
         session_key
@@ -732,20 +807,106 @@ async def get_session_by_id(session_id: str):
     return Session(**dict(row))
 
 
-@app.post("/api/provision", response_model=Session)
-async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTasks):
-    """Provision a new VM for a student."""
+@app.get("/api/session/{session_id}/status", response_model=SessionStatus)
+async def get_session_status(session_id: str):
+    """Get detailed session status with provisioning steps."""
     db = await get_db()
 
-    if not libvirt_conn:
-        raise HTTPException(status_code=503, detail="Libvirt not available")
+    row = await db.fetchrow(
+        """
+        SELECT session_id, url, vm_ip, status, status_message,
+               user_name, course_title, assignment_title,
+               created_at, expires_at, started_at
+        FROM vm_sessions
+        WHERE session_id = $1
+        """,
+        session_id
+    )
 
-    # Verify base image exists
-    if not os.path.exists(BASE_QCOW):
-        raise HTTPException(
-            status_code=503,
-            detail=f"Base QCOW2 image not found: {BASE_QCOW}"
-        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    status = row['status']
+    vm_ip = row['vm_ip']
+    status_message = row['status_message']
+
+    # Define provisioning steps
+    if status == 'error':
+        steps = [
+            ProvisioningStep(id="create_vm", label="Creating virtual machine", status="completed"),
+            ProvisioningStep(id="boot_vm", label="Booting system", status="error", message=status_message or "An error occurred"),
+            ProvisioningStep(id="network", label="Configuring network", status="pending"),
+            ProvisioningStep(id="ssh", label="Starting SSH service", status="pending"),
+            ProvisioningStep(id="terminal", label="Launching web terminal", status="pending"),
+        ]
+        progress = 20
+        ready = False
+        estimated_remaining = None
+    elif status == 'starting':
+        if vm_ip:
+            steps = [
+                ProvisioningStep(id="create_vm", label="Creating virtual machine", status="completed"),
+                ProvisioningStep(id="boot_vm", label="Booting system", status="completed"),
+                ProvisioningStep(id="network", label="Configuring network", status="completed"),
+                ProvisioningStep(id="ssh", label="Starting SSH service", status="in_progress", message="Waiting for SSH..."),
+                ProvisioningStep(id="terminal", label="Launching web terminal", status="pending"),
+            ]
+            progress = 70
+            estimated_remaining = 60
+        else:
+            steps = [
+                ProvisioningStep(id="create_vm", label="Creating virtual machine", status="completed"),
+                ProvisioningStep(id="boot_vm", label="Booting system", status="in_progress", message="VM is booting..."),
+                ProvisioningStep(id="network", label="Configuring network", status="pending"),
+                ProvisioningStep(id="ssh", label="Starting SSH service", status="pending"),
+                ProvisioningStep(id="terminal", label="Launching web terminal", status="pending"),
+            ]
+            progress = 30
+            estimated_remaining = 180
+        ready = False
+    elif status == 'running':
+        steps = [
+            ProvisioningStep(id="create_vm", label="Creating virtual machine", status="completed"),
+            ProvisioningStep(id="boot_vm", label="Booting system", status="completed"),
+            ProvisioningStep(id="network", label="Configuring network", status="completed"),
+            ProvisioningStep(id="ssh", label="Starting SSH service", status="completed"),
+            ProvisioningStep(id="terminal", label="Launching web terminal", status="completed"),
+        ]
+        progress = 100
+        ready = True
+        estimated_remaining = 0
+    else:
+        steps = [
+            ProvisioningStep(id="create_vm", label="Creating virtual machine", status="pending"),
+            ProvisioningStep(id="boot_vm", label="Booting system", status="pending"),
+            ProvisioningStep(id="network", label="Configuring network", status="pending"),
+            ProvisioningStep(id="ssh", label="Starting SSH service", status="pending"),
+            ProvisioningStep(id="terminal", label="Launching web terminal", status="pending"),
+        ]
+        progress = 0
+        ready = False
+        estimated_remaining = None
+
+    return SessionStatus(
+        session_id=session_id,
+        status=status,
+        ready=ready,
+        url=row['url'] if ready else None,
+        vm_ip=vm_ip,
+        error_message=status_message if status == 'error' else None,
+        steps=steps,
+        progress_percent=progress,
+        estimated_seconds_remaining=estimated_remaining
+    )
+
+
+@app.post("/api/provision", response_model=Session)
+async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTasks):
+    """Provision a new VM for a student via Proxmox."""
+    db = await get_db()
+
+    if not proxmox_api:
+        raise HTTPException(status_code=503, detail="Proxmox not available")
 
     # Generate session ID
     session_id = generate_session_id()
@@ -754,13 +915,6 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
     # Calculate expiry
     session_hours = min(request.session_hours or DEFAULT_SESSION_HOURS, MAX_SESSION_HOURS)
     expires_at = datetime.utcnow() + timedelta(hours=session_hours)
-
-    # Allocate IP address
-    vm_ip = await allocate_ip(db, session_id)
-    if not vm_ip:
-        raise HTTPException(status_code=503, detail="No IP addresses available")
-
-    logger.info(f"Provisioning VM {vm_name} with IP {vm_ip}")
 
     # Generate recording paths
     started_at = datetime.utcnow()
@@ -771,66 +925,67 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
         started_at
     )
 
-    # Create overlay QCOW2
-    overlay_path = f"/var/lib/libvirt/images/{vm_name}.qcow2"
-    try:
-        subprocess.run([
-            "qemu-img", "create", "-f", "qcow2",
-            "-b", BASE_QCOW,
-            "-F", "qcow2",
-            overlay_path
-        ], check=True, capture_output=True)
-        logger.info(f"Created overlay: {overlay_path}")
-    except subprocess.CalledProcessError as e:
-        await release_ip(db, session_id)
-        logger.error(f"Failed to create overlay: {e.stderr.decode()}")
-        raise HTTPException(status_code=500, detail="Failed to create VM disk")
-
-    # Generate MAC address
-    mac_address = generate_mac_address()
-
-    # Create VM
-    vm_xml = create_vm_xml(vm_name, overlay_path, VM_RAM_MB, VM_VCPUS, mac_address)
-
-    try:
-        dom = libvirt_conn.defineXML(vm_xml)
-        dom.create()
-        vm_uuid = dom.UUIDString()
-        logger.info(f"Started VM: {vm_name} (UUID: {vm_uuid})")
-    except libvirt.libvirtError as e:
-        await release_ip(db, session_id)
-        os.remove(overlay_path)
-        logger.error(f"Failed to start VM: {e}")
-        raise HTTPException(status_code=500, detail="Failed to start VM")
-
-    # Create initial database record
+    # URL for the session
     url = f"https://lab-{session_id}.{DOMAIN}"
 
+    # Clone VM from template
+    try:
+        vmid = clone_vm(proxmox_api, session_id, vm_name)
+    except Exception as e:
+        logger.error(f"Failed to clone VM: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create VM: {e}")
+
+    # Create initial database record
     await db.execute(
         """
         INSERT INTO vm_sessions (
             session_id, session_key, user_id, user_email, user_name,
             course_id, course_title, assignment_id, assignment_title,
-            vm_ip, vm_name, vm_uuid, overlay_path, url, status, expires_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'starting', $15)
+            vm_ip, vm_name, vm_id, url, status, expires_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, $10, $11, $12, 'starting', $13)
         """,
         session_id, request.session_key, request.user_id, request.user_email,
         request.user_name, request.course_id, request.course_title,
-        request.assignment_id, request.assignment_title, vm_ip, vm_name,
-        vm_uuid, overlay_path, url, expires_at
+        request.assignment_id, request.assignment_title, vm_name, vmid, url, expires_at
     )
+
+    logger.info(f"Provisioned VM {vm_name} (ID: {vmid}) on Proxmox")
 
     await log_event(db, session_id, 'provisioned', {
         'user_id': request.user_id,
-        'course_id': request.course_id
+        'course_id': request.course_id,
+        'vm_id': vmid
     })
 
-    # Wait for VM to be ready and spawn ttyd (in background for faster response)
+    # Start VM and wait for readiness in background
     async def finalize_provisioning():
         try:
+            # Start the VM
+            start_vm(proxmox_api, vmid)
+
+            # Wait for VM to get IP
+            logger.info(f"Waiting for VM {vmid} to get IP...")
+            vm_ip = await wait_for_vm_ip(proxmox_api, vmid, timeout=300)
+
+            if not vm_ip:
+                logger.error(f"VM {vmid} did not get IP after timeout")
+                await db.execute(
+                    "UPDATE vm_sessions SET status = 'error', status_message = 'IP timeout' WHERE session_id = $1",
+                    session_id
+                )
+                return
+
+            logger.info(f"VM {vmid} got IP: {vm_ip}")
+
+            # Update session with actual IP
+            await db.execute(
+                "UPDATE vm_sessions SET vm_ip = $2 WHERE session_id = $1",
+                session_id, vm_ip
+            )
+
             # Wait for SSH
             logger.info(f"Waiting for SSH on {vm_ip}...")
-            ssh_ready = await wait_for_ssh(vm_ip, timeout=120)
+            ssh_ready = await wait_for_ssh(vm_ip, timeout=300)
 
             if not ssh_ready:
                 logger.error(f"SSH not available on {vm_ip} after timeout")
@@ -840,7 +995,7 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 )
                 return
 
-            # Create recording entry in database
+            # Create recording entry
             await create_recording_entry(
                 db, session_id,
                 request.user_id, request.user_email, request.user_name,
@@ -849,7 +1004,7 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 recording_path, timing_path
             )
 
-            # Spawn ttyd container with recording
+            # Spawn ttyd container
             container_id = spawn_ttyd_container(
                 session_id, vm_ip, DOMAIN,
                 recording_path, timing_path
@@ -866,7 +1021,7 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                     session_id, container_id, f"ttyd-{session_id}"
                 )
                 await log_event(db, session_id, 'running', {'recording_path': recording_path})
-                logger.info(f"Session {session_id} is now running with recording")
+                logger.info(f"Session {session_id} is now running")
             else:
                 await db.execute(
                     "UPDATE vm_sessions SET status = 'error', status_message = 'Container spawn failed' WHERE session_id = $1",
@@ -885,7 +1040,7 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
     return Session(
         session_id=session_id,
         url=url,
-        vm_ip=vm_ip,
+        vm_ip=None,
         status="starting",
         user_name=request.user_name,
         course_title=request.course_title,
@@ -901,14 +1056,14 @@ async def destroy_session(session_id: str):
     db = await get_db()
 
     row = await db.fetchrow(
-        "SELECT vm_name, overlay_path FROM vm_sessions WHERE session_id = $1",
+        "SELECT vm_id FROM vm_sessions WHERE session_id = $1",
         session_id
     )
 
     if not row:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    await destroy_session_internal(db, session_id, row['vm_name'], row['overlay_path'])
+    await destroy_session_internal(db, session_id, row['vm_id'])
 
     return {"status": "destroyed", "session_id": session_id}
 
@@ -923,7 +1078,6 @@ async def list_sessions(
     """List all sessions with optional filtering."""
     db = await get_db()
 
-    # Build query
     conditions = []
     params = []
     param_count = 0
@@ -940,11 +1094,9 @@ async def list_sessions(
 
     where_clause = " AND ".join(conditions) if conditions else "1=1"
 
-    # Get total count
     count_query = f"SELECT COUNT(*) FROM vm_sessions WHERE {where_clause}"
     total = await db.fetchval(count_query, *params)
 
-    # Get sessions
     param_count += 1
     limit_param = param_count
     param_count += 1
@@ -960,7 +1112,6 @@ async def list_sessions(
     """
 
     rows = await db.fetch(query, *params, limit, offset)
-
     sessions = [Session(**dict(row)) for row in rows]
 
     return SessionList(sessions=sessions, total=total)
@@ -1004,15 +1155,7 @@ async def list_recordings(
     limit: int = 100,
     offset: int = 0
 ):
-    """
-    List session recordings with filtering options.
-
-    Filter by:
-    - user_email: Student email address
-    - user_name: Student name (partial match)
-    - course_id: Course identifier
-    - date_from/date_to: Date range
-    """
+    """List session recordings with filtering options."""
     db = await get_db()
 
     conditions = []
@@ -1046,11 +1189,9 @@ async def list_recordings(
 
     where_clause = " AND ".join(conditions) if conditions else "1=1"
 
-    # Get total count
     count_query = f"SELECT COUNT(*) FROM session_recordings WHERE {where_clause}"
     total = await db.fetchval(count_query, *params)
 
-    # Get recordings
     param_count += 1
     limit_param = param_count
     param_count += 1
@@ -1066,7 +1207,6 @@ async def list_recordings(
     """
 
     rows = await db.fetch(query, *params, limit, offset)
-
     recordings = [Recording(**dict(row)) for row in rows]
 
     return RecordingList(recordings=recordings, total=total)
@@ -1095,7 +1235,7 @@ async def get_recording(recording_id: int):
 
 @app.get("/api/recordings/{recording_id}/download")
 async def download_recording(recording_id: int):
-    """Download the raw recording file (typescript log)."""
+    """Download the raw recording file."""
     db = await get_db()
 
     row = await db.fetchrow(
@@ -1109,7 +1249,6 @@ async def download_recording(recording_id: int):
     if not os.path.exists(row['recording_path']):
         raise HTTPException(status_code=404, detail="Recording file not found on disk")
 
-    # Generate download filename
     date_str = row['started_at'].strftime("%Y%m%d_%H%M%S") if row['started_at'] else "unknown"
     email_part = sanitize_filename(row['user_email'].split('@')[0] if row['user_email'] else "unknown")
     filename = f"recording_{email_part}_{date_str}.log"
@@ -1121,39 +1260,9 @@ async def download_recording(recording_id: int):
     )
 
 
-@app.get("/api/recordings/{recording_id}/timing")
-async def download_timing(recording_id: int):
-    """Download the timing file for playback with scriptreplay."""
-    db = await get_db()
-
-    row = await db.fetchrow(
-        "SELECT timing_path, user_email, started_at FROM session_recordings WHERE id = $1",
-        recording_id
-    )
-
-    if not row or not row['timing_path']:
-        raise HTTPException(status_code=404, detail="Timing file not found")
-
-    if not os.path.exists(row['timing_path']):
-        raise HTTPException(status_code=404, detail="Timing file not found on disk")
-
-    date_str = row['started_at'].strftime("%Y%m%d_%H%M%S") if row['started_at'] else "unknown"
-    email_part = sanitize_filename(row['user_email'].split('@')[0] if row['user_email'] else "unknown")
-    filename = f"recording_{email_part}_{date_str}.timing"
-
-    return FileResponse(
-        row['timing_path'],
-        media_type="text/plain",
-        filename=filename
-    )
-
-
 @app.get("/api/recordings/{recording_id}/view")
 async def view_recording(recording_id: int):
-    """
-    View recording contents as plain text.
-    Useful for quick inspection without downloading.
-    """
+    """View recording contents as plain text."""
     db = await get_db()
 
     row = await db.fetchrow(
@@ -1167,135 +1276,16 @@ async def view_recording(recording_id: int):
     if not os.path.exists(row['recording_path']):
         raise HTTPException(status_code=404, detail="Recording file not found on disk")
 
-    # Read file (limit to 1MB for safety)
     try:
         with open(row['recording_path'], 'r', errors='replace') as f:
-            content = f.read(1024 * 1024)  # Max 1MB
+            content = f.read(1024 * 1024)
 
-        # Strip ANSI escape codes for cleaner text output
         ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
         clean_content = ansi_escape.sub('', content)
 
         return PlainTextResponse(clean_content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read recording: {e}")
-
-
-@app.get("/api/recordings/{recording_id}/cast")
-async def get_recording_cast(recording_id: int):
-    """
-    Convert recording to asciicast v2 format for asciinema-player.
-    This reads the typescript log and timing file and converts to JSON.
-    """
-    db = await get_db()
-
-    row = await db.fetchrow(
-        """
-        SELECT recording_path, timing_path, user_name, started_at
-        FROM session_recordings WHERE id = $1
-        """,
-        recording_id
-    )
-
-    if not row:
-        raise HTTPException(status_code=404, detail="Recording not found")
-
-    recording_path = row['recording_path']
-    timing_path = row['timing_path']
-
-    if not recording_path or not os.path.exists(recording_path):
-        raise HTTPException(status_code=404, detail="Recording file not found")
-
-    if not timing_path or not os.path.exists(timing_path):
-        raise HTTPException(status_code=404, detail="Timing file not found")
-
-    try:
-        # Read recording content
-        with open(recording_path, 'rb') as f:
-            content = f.read()
-
-        # Read timing data
-        with open(timing_path, 'r') as f:
-            timing_lines = f.readlines()
-
-        # Build asciicast v2 format
-        # Header
-        started_at = row['started_at'].timestamp() if row['started_at'] else time.time()
-        cast_header = {
-            "version": 2,
-            "width": 120,
-            "height": 30,
-            "timestamp": int(started_at),
-            "title": f"Session Recording - {row['user_name'] or 'Student'}",
-            "env": {"SHELL": "/bin/bash", "TERM": "xterm-256color"}
-        }
-
-        # Parse timing and build events
-        events = []
-        content_pos = 0
-        current_time = 0.0
-
-        for line in timing_lines:
-            parts = line.strip().split(' ')
-            if len(parts) >= 2:
-                try:
-                    delay = float(parts[0])
-                    byte_count = int(parts[1])
-                except ValueError:
-                    continue
-
-                current_time += delay
-
-                # Extract the chunk of output
-                chunk = content[content_pos:content_pos + byte_count]
-                content_pos += byte_count
-
-                if chunk:
-                    # Try to decode as UTF-8, replacing errors
-                    try:
-                        text = chunk.decode('utf-8', errors='replace')
-                    except Exception:
-                        text = chunk.decode('latin-1', errors='replace')
-
-                    events.append([round(current_time, 6), "o", text])
-
-        # Build output as newline-delimited JSON (asciicast v2 format)
-        output_lines = [json.dumps(cast_header)]
-        for event in events:
-            output_lines.append(json.dumps(event))
-
-        return PlainTextResponse(
-            content='\n'.join(output_lines),
-            media_type="application/x-asciicast"
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to generate asciicast: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate playback format: {e}")
-
-
-@app.get("/api/recordings/by-session/{session_id}")
-async def get_recording_by_session(session_id: str):
-    """Get recording for a specific session."""
-    db = await get_db()
-
-    row = await db.fetchrow(
-        """
-        SELECT id, session_id, user_name, user_email, course_title, assignment_title,
-               started_at, ended_at, duration_seconds, file_size_bytes, status,
-               recording_path, timing_path
-        FROM session_recordings
-        WHERE session_id = $1
-        ORDER BY started_at DESC
-        LIMIT 1
-        """,
-        session_id
-    )
-
-    if not row:
-        raise HTTPException(status_code=404, detail="Recording not found for this session")
-
-    return dict(row)
 
 
 # ============================================================================
@@ -1326,17 +1316,10 @@ async def get_stats():
         FROM session_recordings
     """)
 
-    # Get available IPs
-    available_ips = await db.fetchval(
-        "SELECT COUNT(*) FROM ip_allocations WHERE session_id IS NULL OR released_at IS NOT NULL"
-    )
-
-    # Get unique students count from recordings
     unique_students = await db.fetchval(
         "SELECT COUNT(DISTINCT user_email) FROM session_recordings WHERE user_email IS NOT NULL"
     )
 
-    # Get total sessions count
     total_sessions = await db.fetchval("SELECT COUNT(*) FROM vm_sessions")
 
     return {
@@ -1346,16 +1329,16 @@ async def get_stats():
         "total_destroyed": stats['destroyed'],
         "active_courses": stats['active_courses'],
         "active_users": stats['active_users'],
-        "available_ips": available_ips,
         "vm_ram_mb": VM_RAM_MB,
         "vm_vcpus": VM_VCPUS,
         "total_recordings": recording_stats['total_recordings'],
         "completed_recordings": recording_stats['completed_recordings'],
         "total_recording_size_mb": round(recording_stats['total_recording_bytes'] / (1024 * 1024), 2),
-        # Additional fields for instructor dashboard
         "total_sessions": total_sessions,
         "active_sessions": stats['running'],
-        "unique_students": unique_students or 0
+        "unique_students": unique_students or 0,
+        "proxmox_host": PROXMOX_HOST,
+        "proxmox_node": PROXMOX_NODE
     }
 
 

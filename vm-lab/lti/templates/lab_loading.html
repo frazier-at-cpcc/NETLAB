@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lab Environment - Red Hat Academy</title>
+    <link rel="stylesheet" href="/static/css/loading.css">
+</head>
+<body>
+    <div class="loading-container">
+        <header>
+            <h1>Red Hat Academy Lab</h1>
+        </header>
+
+        <main>
+            <div class="card">
+                <div class="card-header">
+                    <h2 id="status-title">Lab Environment</h2>
+                    <p class="subtitle">{{ assignment_title }}</p>
+                </div>
+
+                <div class="card-body">
+                    <!-- Starting State: Progress -->
+                    <div id="starting-state" class="state-container" style="{% if initial_status != 'starting' %}display: none;{% endif %}">
+                        <!-- Progress Bar -->
+                        <div class="progress-container">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+                            </div>
+                            <div class="progress-text">
+                                <span id="progress-percent">0%</span>
+                                <span id="time-remaining"></span>
+                            </div>
+                        </div>
+
+                        <!-- Steps List -->
+                        <div class="steps-container">
+                            <ul class="steps-list" id="steps-list">
+                                <li class="step pending" data-step="create_vm">
+                                    <span class="step-icon"></span>
+                                    <span class="step-label">Creating virtual machine</span>
+                                    <span class="step-status"></span>
+                                </li>
+                                <li class="step pending" data-step="boot_vm">
+                                    <span class="step-icon"></span>
+                                    <span class="step-label">Booting system</span>
+                                    <span class="step-status"></span>
+                                </li>
+                                <li class="step pending" data-step="network">
+                                    <span class="step-icon"></span>
+                                    <span class="step-label">Configuring network</span>
+                                    <span class="step-status"></span>
+                                </li>
+                                <li class="step pending" data-step="ssh">
+                                    <span class="step-icon"></span>
+                                    <span class="step-label">Starting SSH service</span>
+                                    <span class="step-status"></span>
+                                </li>
+                                <li class="step pending" data-step="terminal">
+                                    <span class="step-icon"></span>
+                                    <span class="step-label">Launching web terminal</span>
+                                    <span class="step-status"></span>
+                                </li>
+                            </ul>
+                        </div>
+
+                        <!-- Info Box -->
+                        <div class="info-box">
+                            <p>Your dedicated RHEL virtual machine is being prepared. This usually takes 1-2 minutes.</p>
+                        </div>
+
+                        <!-- Cancel Button -->
+                        <div class="action-buttons">
+                            <button class="btn btn-secondary" onclick="stopSession()" id="cancel-btn">
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Running State: Controls -->
+                    <div id="running-state" class="state-container" style="{% if initial_status != 'running' %}display: none;{% endif %}">
+                        <div class="ready-icon success">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                            </svg>
+                        </div>
+                        <h3 class="state-title success">Your Lab is Ready!</h3>
+                        <p class="state-description">Your RHEL virtual machine is running and ready for use.</p>
+
+                        <div class="vm-info">
+                            <div class="vm-info-item">
+                                <span class="label">Status:</span>
+                                <span class="value status-running">Running</span>
+                            </div>
+                            <div class="vm-info-item" id="vm-ip-row" style="display: none;">
+                                <span class="label">VM IP:</span>
+                                <span class="value" id="vm-ip">-</span>
+                            </div>
+                        </div>
+
+                        <div class="action-buttons primary-actions">
+                            <a href="#" id="open-terminal-btn" class="btn btn-primary btn-lg" target="_blank">
+                                Open Terminal
+                            </a>
+                        </div>
+
+                        <div class="action-buttons secondary-actions">
+                            <button class="btn btn-warning" onclick="confirmRecreate()" id="recreate-btn">
+                                Recreate VM
+                            </button>
+                            <button class="btn btn-danger" onclick="confirmStop()" id="stop-btn">
+                                Stop Lab
+                            </button>
+                        </div>
+
+                        <div class="help-text">
+                            <p><strong>Recreate:</strong> Destroys your current VM and creates a fresh one. Use if your VM is unresponsive.</p>
+                            <p><strong>Stop:</strong> Shuts down your VM. You can start a new one by relaunching from your LMS.</p>
+                        </div>
+                    </div>
+
+                    <!-- Error State -->
+                    <div id="error-state" class="state-container" style="display: none;">
+                        <div class="ready-icon error">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+                            </svg>
+                        </div>
+                        <h3 class="state-title error">Something Went Wrong</h3>
+                        <p class="state-description" id="error-message">An error occurred while provisioning your lab environment.</p>
+
+                        <div class="action-buttons">
+                            <button class="btn btn-primary btn-lg" onclick="retryProvisioning()">
+                                Try Again
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Stopped State -->
+                    <div id="stopped-state" class="state-container" style="display: none;">
+                        <div class="ready-icon neutral">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/>
+                            </svg>
+                        </div>
+                        <h3 class="state-title neutral">Lab Stopped</h3>
+                        <p class="state-description">Your lab environment has been stopped.</p>
+
+                        <div class="action-buttons">
+                            <button class="btn btn-primary btn-lg" onclick="window.location.reload()">
+                                Start New Lab
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Loading Overlay -->
+                    <div id="loading-overlay" class="loading-overlay" style="display: none;">
+                        <div class="loading-spinner"></div>
+                        <p id="loading-message">Processing...</p>
+                    </div>
+                </div>
+
+                <div class="card-footer">
+                    <div class="session-info">
+                        <span class="info-item">
+                            <strong>Student:</strong> {{ user_name }}
+                        </span>
+                        <span class="info-item">
+                            <strong>Course:</strong> {{ course_title }}
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <p>Need help? Contact your instructor.</p>
+        </footer>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div id="confirm-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">Confirm Action</h3>
+            </div>
+            <div class="modal-body">
+                <p id="modal-message">Are you sure?</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-danger" id="modal-confirm-btn" onclick="executeAction()">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration from server
+        const config = {
+            sessionId: "{{ session_id }}",
+            statusUrl: "/api/session/{{ session_id }}/status",
+            stopUrl: "/api/session/{{ session_id }}",
+            recreateUrl: "/api/session/{{ session_id }}/recreate",
+            labUrl: "{{ lab_url }}",
+            initialStatus: "{{ initial_status | default('starting') }}",
+            pollInterval: 2000
+        };
+
+        let pollTimer = null;
+        let currentAction = null;
+
+        // State management
+        function showState(stateName) {
+            ['starting', 'running', 'error', 'stopped'].forEach(state => {
+                const el = document.getElementById(`${state}-state`);
+                if (el) el.style.display = state === stateName ? 'block' : 'none';
+            });
+
+            // Update title
+            const titleEl = document.getElementById('status-title');
+            switch (stateName) {
+                case 'starting':
+                    titleEl.textContent = 'Preparing Your Lab Environment';
+                    break;
+                case 'running':
+                    titleEl.textContent = 'Lab Environment';
+                    break;
+                case 'error':
+                    titleEl.textContent = 'Provisioning Failed';
+                    break;
+                case 'stopped':
+                    titleEl.textContent = 'Lab Stopped';
+                    break;
+            }
+        }
+
+        // Show/hide loading overlay
+        function showLoading(message) {
+            document.getElementById('loading-message').textContent = message || 'Processing...';
+            document.getElementById('loading-overlay').style.display = 'flex';
+        }
+
+        function hideLoading() {
+            document.getElementById('loading-overlay').style.display = 'none';
+        }
+
+        // Update the UI based on status response
+        function updateUI(data) {
+            if (data.status === 'error') {
+                showState('error');
+                document.getElementById('error-message').textContent =
+                    data.error_message || 'An error occurred while provisioning your lab environment.';
+                stopPolling();
+                return;
+            }
+
+            if (data.status === 'destroyed') {
+                showState('stopped');
+                stopPolling();
+                return;
+            }
+
+            if (data.ready && data.url) {
+                // Running state
+                showState('running');
+                document.getElementById('open-terminal-btn').href = data.url;
+                if (data.vm_ip) {
+                    document.getElementById('vm-ip').textContent = data.vm_ip;
+                    document.getElementById('vm-ip-row').style.display = 'flex';
+                }
+                stopPolling();
+                return;
+            }
+
+            // Still starting - update progress
+            showState('starting');
+
+            // Update progress bar
+            const progressFill = document.getElementById('progress-fill');
+            const progressPercent = document.getElementById('progress-percent');
+            const timeRemaining = document.getElementById('time-remaining');
+
+            progressFill.style.width = data.progress_percent + '%';
+            progressPercent.textContent = data.progress_percent + '%';
+
+            if (data.estimated_seconds_remaining !== null && data.estimated_seconds_remaining > 0) {
+                const mins = Math.floor(data.estimated_seconds_remaining / 60);
+                const secs = data.estimated_seconds_remaining % 60;
+                if (mins > 0) {
+                    timeRemaining.textContent = `~${mins}m ${secs}s remaining`;
+                } else {
+                    timeRemaining.textContent = `~${secs}s remaining`;
+                }
+            } else {
+                timeRemaining.textContent = '';
+            }
+
+            // Update steps
+            if (data.steps) {
+                data.steps.forEach(step => {
+                    const stepEl = document.querySelector(`[data-step="${step.id}"]`);
+                    if (stepEl) {
+                        stepEl.classList.remove('pending', 'in_progress', 'completed', 'error');
+                        stepEl.classList.add(step.status);
+                        const statusEl = stepEl.querySelector('.step-status');
+                        statusEl.textContent = step.message || '';
+                    }
+                });
+            }
+        }
+
+        // Poll for status updates
+        async function pollStatus() {
+            try {
+                const response = await fetch(config.statusUrl);
+                if (response.status === 404) {
+                    showState('stopped');
+                    stopPolling();
+                    return;
+                }
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const data = await response.json();
+                updateUI(data);
+            } catch (error) {
+                console.error('Error polling status:', error);
+            }
+        }
+
+        function startPolling() {
+            pollStatus();
+            pollTimer = setInterval(pollStatus, config.pollInterval);
+        }
+
+        function stopPolling() {
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+        }
+
+        // Actions
+        async function stopSession() {
+            showLoading('Stopping lab...');
+            try {
+                const response = await fetch(config.stopUrl, { method: 'DELETE' });
+                if (response.ok) {
+                    showState('stopped');
+                    stopPolling();
+                } else {
+                    const data = await response.json();
+                    alert('Failed to stop: ' + (data.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Error stopping session:', error);
+                alert('Failed to stop session. Please try again.');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function recreateSession() {
+            showLoading('Recreating lab environment...');
+            try {
+                const response = await fetch(config.recreateUrl, { method: 'POST' });
+                if (response.ok) {
+                    const data = await response.json();
+                    // Update config with new session
+                    config.sessionId = data.session_id;
+                    config.statusUrl = `/api/session/${data.session_id}/status`;
+                    config.stopUrl = `/api/session/${data.session_id}`;
+                    config.recreateUrl = `/api/session/${data.session_id}/recreate`;
+                    config.labUrl = data.url;
+
+                    // Reset steps UI
+                    document.querySelectorAll('.step').forEach(step => {
+                        step.classList.remove('completed', 'in_progress', 'error');
+                        step.classList.add('pending');
+                        step.querySelector('.step-status').textContent = '';
+                    });
+
+                    // Switch to starting state and begin polling
+                    showState('starting');
+                    hideLoading();
+                    startPolling();
+                } else {
+                    const data = await response.json();
+                    hideLoading();
+                    alert('Failed to recreate: ' + (data.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Error recreating session:', error);
+                hideLoading();
+                alert('Failed to recreate session. Please try again.');
+            }
+        }
+
+        function retryProvisioning() {
+            window.location.reload();
+        }
+
+        // Confirmation modal
+        function showModal(title, message, action) {
+            currentAction = action;
+            document.getElementById('modal-title').textContent = title;
+            document.getElementById('modal-message').textContent = message;
+            document.getElementById('confirm-modal').classList.add('active');
+        }
+
+        function closeModal() {
+            document.getElementById('confirm-modal').classList.remove('active');
+            currentAction = null;
+        }
+
+        function executeAction() {
+            closeModal();
+            if (currentAction === 'stop') {
+                stopSession();
+            } else if (currentAction === 'recreate') {
+                recreateSession();
+            }
+        }
+
+        function confirmStop() {
+            showModal(
+                'Stop Lab?',
+                'This will shut down your virtual machine. All unsaved work will be lost. You can start a new lab by relaunching from your LMS.',
+                'stop'
+            );
+        }
+
+        function confirmRecreate() {
+            showModal(
+                'Recreate Lab?',
+                'This will destroy your current VM and create a fresh one. All unsaved work will be lost. Use this if your VM is unresponsive.',
+                'recreate'
+            );
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            // Set initial state based on server data
+            if (config.initialStatus === 'running') {
+                // Show running state immediately with the URL we have
+                showState('running');
+                document.getElementById('open-terminal-btn').href = config.labUrl;
+                // Poll once to get any additional details (like VM IP)
+                pollStatus();
+            } else {
+                showState('starting');
+                startPolling();
+            }
+        });
+
+        window.addEventListener('beforeunload', stopPolling);
+    </script>
+</body>
+</html>

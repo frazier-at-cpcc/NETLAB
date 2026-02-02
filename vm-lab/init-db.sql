@@ -139,8 +139,9 @@ CREATE TABLE IF NOT EXISTS vm_sessions (
     -- VM details
     vm_ip VARCHAR(45),
     vm_name VARCHAR(128),
-    vm_uuid VARCHAR(36),
-    overlay_path TEXT,
+    vm_id INTEGER,           -- Proxmox VM ID
+    vm_uuid VARCHAR(36),     -- Legacy: libvirt UUID
+    overlay_path TEXT,       -- Legacy: libvirt overlay path
 
     -- Container details
     container_id VARCHAR(128),

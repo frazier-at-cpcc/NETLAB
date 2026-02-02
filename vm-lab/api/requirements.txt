@@ -10,11 +10,11 @@ docker>=7.1.0
 requests>=2.32.0
 urllib3>=2.0.0
 
-# Libvirt bindings
-libvirt-python==10.0.0
+# Proxmox API client
+proxmoxer>=2.0.0
 
 # Data validation
 pydantic==2.5.3
 
-# HTTP client (for health checks)
+# HTTP client (for health checks and async requests)
 httpx==0.26.0

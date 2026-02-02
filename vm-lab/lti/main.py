@@ -259,6 +259,12 @@ def verify_oauth_signature(
     )
     calculated_signature = base64.b64encode(hashed.digest()).decode('utf-8')
 
+    # Debug logging
+    logger.info(f"OAuth Debug - Base URL: {base_url}")
+    logger.info(f"OAuth Debug - Provided signature: {provided_signature}")
+    logger.info(f"OAuth Debug - Calculated signature: {calculated_signature}")
+    logger.info(f"OAuth Debug - Signatures match: {hmac.compare_digest(calculated_signature, provided_signature)}")
+
     # Compare signatures (constant-time comparison)
     return hmac.compare_digest(calculated_signature, provided_signature)
 
@@ -316,11 +322,14 @@ async def handle_lti11_launch(
         raise HTTPException(status_code=401, detail="OAuth nonce already used")
 
     # Build request URL for signature verification
-    request_url = str(request.url)
+    # Use LTI_BASE_URL to get the external URL that the LMS used for signing
+    request_url = f"{LTI_BASE_URL}/lti/launch"
+    logger.debug(f"OAuth verification URL: {request_url}")
 
     # Verify OAuth signature
     if not verify_oauth_signature(request_url, "POST", form_data, consumer_secret):
         logger.warning(f"Invalid OAuth signature for consumer: {consumer_key}")
+        logger.warning(f"Signature verification failed with URL: {request_url}")
         raise HTTPException(status_code=401, detail="Invalid OAuth signature")
 
     # Validate LTI message type
@@ -679,7 +688,7 @@ async def provision_or_redirect(
 ) -> Response:
     """
     Check for existing VM session or provision a new one.
-    Returns redirect to the VM terminal URL.
+    Shows a loading page with progress for new sessions.
     For instructors, returns the instructor dashboard instead.
     """
     # Check if user is an instructor
@@ -708,6 +717,16 @@ async def provision_or_redirect(
             }
         )
 
+    # Store session context in cookie for later use (recreate, etc.)
+    request.session['session_key'] = session_key
+    request.session['user_id'] = user_id
+    request.session['user_email'] = user_email
+    request.session['user_name'] = user_name
+    request.session['course_id'] = course_id
+    request.session['course_title'] = course_title
+    request.session['assignment_id'] = assignment_id
+    request.session['assignment_title'] = assignment_title
+
     async with httpx.AsyncClient(timeout=120.0) as client:
         # Check if user already has an active session
         encoded_key = urllib.parse.quote(session_key, safe='')
@@ -718,12 +737,49 @@ async def provision_or_redirect(
 
             if existing.status_code == 200:
                 session_data = existing.json()
-                logger.info(f"Found existing session for {user_name}: {session_data.get('url')}")
-                return RedirectResponse(url=session_data['url'], status_code=302)
+                session_id = session_data.get('session_id')
+                session_status = session_data.get('status')
+                logger.info(f"Found existing session for {user_name}: {session_data.get('url')} (status: {session_status})")
+
+                # Store the current session ID in cookie
+                request.session['current_session_id'] = session_id
+
+                # If session is fully running, show the control page (not direct redirect)
+                if session_status == 'running':
+                    return templates.TemplateResponse(
+                        "lab_loading.html",
+                        {
+                            "request": request,
+                            "session_id": session_id,
+                            "lab_url": session_data.get('url'),
+                            "user_name": user_name,
+                            "course_title": course_title,
+                            "assignment_title": assignment_title,
+                            "initial_status": "running"
+                        }
+                    )
+
+                # If session is still starting, show the loading page
+                if session_status == 'starting':
+                    return templates.TemplateResponse(
+                        "lab_loading.html",
+                        {
+                            "request": request,
+                            "session_id": session_id,
+                            "lab_url": session_data.get('url'),
+                            "user_name": user_name,
+                            "course_title": course_title,
+                            "assignment_title": assignment_title,
+                            "initial_status": "starting"
+                        }
+                    )
+
+                # For other statuses (error, destroyed), provision a new VM
+                logger.info(f"Existing session has status '{session_status}', provisioning new VM")
         except httpx.RequestError as e:
             logger.error(f"Error checking existing session: {e}")
 
-        # No existing session - provision new VM
+        # No existing session or need new one - provision new VM
         logger.info(f"Provisioning new VM for {user_name} ({user_email})")
 
         try:
@@ -750,9 +806,25 @@ async def provision_or_redirect(
                 )
 
             session_data = provision_response.json()
+            session_id = session_data.get('session_id')
             logger.info(f"Provisioned VM: {session_data.get('url')}")
 
-            return RedirectResponse(url=session_data['url'], status_code=302)
+            # Store the current session ID in cookie
+            request.session['current_session_id'] = session_id
+
+            # Show loading page with progress instead of immediate redirect
+            return templates.TemplateResponse(
+                "lab_loading.html",
+                {
+                    "request": request,
+                    "session_id": session_id,
+                    "lab_url": session_data.get('url'),
+                    "user_name": user_name,
+                    "course_title": course_title,
+                    "assignment_title": assignment_title,
+                    "initial_status": "starting"
+                }
+            )
 
         except httpx.RequestError as e:
             logger.error(f"Error provisioning VM: {e}")
@@ -925,6 +997,128 @@ async def proxy_stats(request: Request):
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(f"{ORCHESTRATOR_API}/api/stats")
         return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+# ============================================================================
+# Session Status API (for student loading page)
+# ============================================================================
+
+@app.get("/api/session/{session_id}/status")
+async def proxy_session_status(session_id: str):
+    """
+    Proxy session status for the student loading page.
+
+    This endpoint does NOT require authentication since it's called
+    from the loading page before the session is fully established.
+    The session_id acts as an implicit authentication token.
+    """
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.get(f"{ORCHESTRATOR_API}/api/session/{session_id}/status")
+            if response.status_code == 404:
+                raise HTTPException(status_code=404, detail="Session not found")
+            return JSONResponse(content=response.json(), status_code=response.status_code)
+        except httpx.RequestError as e:
+            logger.error(f"Error fetching session status: {e}")
+            raise HTTPException(status_code=503, detail="Unable to fetch session status")
+
+
+@app.delete("/api/session/{session_id}")
+async def stop_student_session(request: Request, session_id: str):
+    """
+    Stop/destroy a student's VM session.
+
+    Verifies the session belongs to the requesting user via session cookie.
+    """
+    # Verify this is the user's session
+    user_session_id = request.session.get('current_session_id')
+    if user_session_id != session_id:
+        logger.warning(f"Session mismatch: cookie={user_session_id}, requested={session_id}")
+        raise HTTPException(status_code=403, detail="Not authorized to stop this session")
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.delete(f"{ORCHESTRATOR_API}/api/{session_id}")
+            # Clear the session from cookie
+            request.session.pop('current_session_id', None)
+            return JSONResponse(content={"status": "stopped"}, status_code=200)
+        except httpx.RequestError as e:
+            logger.error(f"Error stopping session: {e}")
+            raise HTTPException(status_code=503, detail="Unable to stop session")
+
+
+@app.post("/api/session/{session_id}/recreate")
+async def recreate_student_session(request: Request, session_id: str):
+    """
+    Recreate a student's VM session (stop existing and start new).
+
+    Returns the new session details.
+    """
+    # Verify this is the user's session
+    user_session_id = request.session.get('current_session_id')
+    if user_session_id != session_id:
+        logger.warning(f"Session mismatch: cookie={user_session_id}, requested={session_id}")
+        raise HTTPException(status_code=403, detail="Not authorized to recreate this session")
+
+    # Get the original session info for reprovisioning
+    session_key = request.session.get('session_key')
+    user_id = request.session.get('user_id')
+    user_email = request.session.get('user_email')
+    user_name = request.session.get('user_name')
+    course_id = request.session.get('course_id')
+    course_title = request.session.get('course_title')
+    assignment_id = request.session.get('assignment_id')
+    assignment_title = request.session.get('assignment_title')
+
+    if not session_key:
+        raise HTTPException(status_code=400, detail="Session context not found. Please relaunch from LMS.")
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        # First, destroy the existing session
+        try:
+            await client.delete(f"{ORCHESTRATOR_API}/api/{session_id}")
+            logger.info(f"Destroyed old session {session_id} for recreate")
+        except httpx.RequestError as e:
+            logger.warning(f"Error destroying old session (continuing): {e}")
+
+        # Provision a new session
+        try:
+            provision_response = await client.post(
+                f"{ORCHESTRATOR_API}/api/provision",
+                json={
+                    "session_key": session_key,
+                    "user_id": user_id,
+                    "user_email": user_email,
+                    "user_name": user_name,
+                    "course_id": course_id,
+                    "course_title": course_title,
+                    "assignment_id": assignment_id,
+                    "assignment_title": assignment_title
+                }
+            )
+
+            if provision_response.status_code != 200:
+                error_detail = provision_response.text
+                logger.error(f"Reprovisioning failed: {error_detail}")
+                raise HTTPException(status_code=503, detail="Failed to recreate lab environment")
+
+            session_data = provision_response.json()
+            new_session_id = session_data.get('session_id')
+
+            # Update the session cookie with new session ID
+            request.session['current_session_id'] = new_session_id
+
+            logger.info(f"Recreated session: old={session_id}, new={new_session_id}")
+
+            return JSONResponse(content={
+                "status": "recreating",
+                "session_id": new_session_id,
+                "url": session_data.get('url')
+            })
+
+        except httpx.RequestError as e:
+            logger.error(f"Error provisioning new session: {e}")
+            raise HTTPException(status_code=503, detail="Unable to create new session")
 
 
 # ============================================================================

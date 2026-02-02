@@ -1,16 +1,18 @@
 services:
   # Reverse Proxy - Routes traffic to appropriate services
   traefik:
-    image: traefik:v3.2
+    image: traefik:v3.3
     container_name: traefik
     restart: unless-stopped
+    environment:
+      - DOCKER_API_VERSION=1.44
     ports:
       - "80:80"
       - "443:443"
       - "8080:8080"  # Traefik dashboard
     volumes:
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic
       - traefik_logs:/var/log/traefik
     networks:
       - lab-network
@@ -56,28 +58,39 @@ services:
       timeout: 10s
       retries: 3
 
-  # VM Orchestration API - Manages VM lifecycle
+  # VM Orchestration API - Manages VM lifecycle via Proxmox
   lab-api:
     build:
       context: ./api
       dockerfile: Dockerfile
     container_name: lab-api
     restart: unless-stopped
-    privileged: true  # Required for libvirt access
     environment:
-      - BASE_QCOW=${BASE_QCOW}
+      # Proxmox connection
+      - PROXMOX_HOST=${PROXMOX_HOST}
+      - PROXMOX_PORT=${PROXMOX_PORT:-8006}
+      - PROXMOX_USER=${PROXMOX_USER:-root@pam}
+      - PROXMOX_PASSWORD=${PROXMOX_PASSWORD}
+      - PROXMOX_VERIFY_SSL=${PROXMOX_VERIFY_SSL:-false}
+      - PROXMOX_NODE=${PROXMOX_NODE}
+      - PROXMOX_STORAGE=${PROXMOX_STORAGE:-local-lvm}
+      - PROXMOX_TEMPLATE_ID=${PROXMOX_TEMPLATE_ID:-500}
+      - PROXMOX_BRIDGE=${PROXMOX_BRIDGE:-vmbr0}
+      # VM configuration
       - VM_RAM_MB=${VM_RAM_MB:-16384}
       - VM_VCPUS=${VM_VCPUS:-4}
+      - VM_ID_START=${VM_ID_START:-1000}
+      - VM_ID_END=${VM_ID_END:-9999}
+      # General
       - DOMAIN=${DOMAIN}
       - DATABASE_URL=postgresql://lab:${LAB_DB_PASS}@postgres:5432/lab
       - SSH_PRIVATE_KEY_PATH=/app/keys/id_ed25519
       - SSH_USER=${SSH_USER:-kiosk}
       - RECORDINGS_DIR=/var/lib/vm-lab/recordings
     volumes:
-      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
-      - /var/lib/libvirt/images:/var/lib/libvirt/images
       - /var/run/docker.sock:/var/run/docker.sock
       - ./lti/keys:/app/keys:ro
+      - ./traefik/dynamic:/app/traefik-dynamic
       - session_recordings:/var/lib/vm-lab/recordings
     labels:
       - "traefik.enable=true"

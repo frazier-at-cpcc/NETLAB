@@ -1,0 +1,42 @@
+# Traefik Dynamic Configuration
+# Note: ttyd containers are dynamically routed via Docker labels
+http:
+  routers:
+    # HTTP routers (for Cloudflare tunnel traffic)
+    lti-http:
+      rule: "Host(`lablti.labsconnect.org`)"
+      entryPoints:
+        - web
+      service: lti-service
+
+    api-http:
+      rule: "Host(`labapi.labsconnect.org`)"
+      entryPoints:
+        - web
+      service: api-service
+
+    # HTTPS routers (for direct access if needed)
+    lti-https:
+      rule: "Host(`lablti.labsconnect.org`)"
+      entryPoints:
+        - websecure
+      service: lti-service
+      tls: {}
+
+    api-https:
+      rule: "Host(`labapi.labsconnect.org`)"
+      entryPoints:
+        - websecure
+      service: api-service
+      tls: {}
+
+  services:
+    lti-service:
+      loadBalancer:
+        servers:
+          - url: "http://lti-server:8000"
+
+    api-service:
+      loadBalancer:
+        servers:
+          - url: "http://lab-api:8000"
