@@ -1,11 +1,12 @@
-FROM python:3.11-slim
+FROM python:3.11
 
 WORKDIR /app
 
 # Install system dependencies including libvirt
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y \
     curl \
     libvirt-dev \
+    libvirt-daemon-system \
     pkg-config \
     gcc \
     python3-dev \
