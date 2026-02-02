@@ -81,8 +81,49 @@
 
                 <!-- Card Body -->
                 <div class="p-6 relative min-h-[350px]">
+                    <!-- Ready State (Start Lab) -->
+                    <div id="ready-state" class="space-y-6" style="{% if initial_status != 'ready' %}display: none;{% endif %}">
+                        <div class="flex justify-center">
+                            <div class="w-24 h-24 bg-cpcc-light rounded-full flex items-center justify-center">
+                                <svg class="w-12 h-12 text-cpcc-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                                </svg>
+                            </div>
+                        </div>
+
+                        <div class="text-center">
+                            <h3 class="text-xl font-bold text-slate-800">Ready to Launch</h3>
+                            <p class="text-slate-500 text-sm mt-2">Click the button below to start your virtual lab environment.</p>
+                        </div>
+
+                        <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                            <div class="flex items-start gap-3">
+                                <svg class="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                </svg>
+                                <div class="text-sm text-blue-800">
+                                    <p class="font-medium">What to expect:</p>
+                                    <ul class="mt-1 space-y-1 text-blue-700">
+                                        <li>• A dedicated RHEL virtual machine will be created for you</li>
+                                        <li>• Setup typically takes less than a minute</li>
+                                        <li>• You'll have full terminal access via your browser</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+
+                        <button onclick="startLab()"
+                                class="w-full py-4 bg-gradient-to-r from-cpcc-primary to-cpcc-dark text-white font-bold text-lg rounded-xl hover:shadow-lg hover:scale-[1.02] transition-all duration-200 flex items-center justify-center gap-2">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            Start Lab
+                        </button>
+                    </div>
+
                     <!-- Starting State -->
-                    <div id="starting-state" class="space-y-6" style="{% if initial_status != 'starting' %}display: none;{% endif %}">
+                    <div id="starting-state" class="space-y-6" style="{% if initial_status != 'starting' %}display: none;{% endif %}"">
                         <!-- Progress Section -->
                         <div class="space-y-2">
                             <div class="flex justify-between text-sm">
@@ -351,12 +392,24 @@
         // Configuration from server
         const config = {
             sessionId: "{{ session_id }}",
+            provisionUrl: "/api/provision",
             statusUrl: "/api/session/{{ session_id }}/status",
             stopUrl: "/api/session/{{ session_id }}",
             recreateUrl: "/api/session/{{ session_id }}/recreate",
             labUrl: "{{ lab_url }}",
-            initialStatus: "{{ initial_status | default('starting') }}",
-            pollInterval: 2000
+            initialStatus: "{{ initial_status | default('ready') }}",
+            pollInterval: 2000,
+            // Session context for provisioning
+            sessionContext: {
+                session_key: "{{ session_key | default('') }}",
+                user_id: "{{ user_id | default('') }}",
+                user_email: "{{ user_email | default('') }}",
+                user_name: "{{ user_name | default('') }}",
+                course_id: "{{ course_id | default('') }}",
+                course_title: "{{ course_title | default('') }}",
+                assignment_id: "{{ assignment_id | default('') }}",
+                assignment_title: "{{ assignment_title | default('') }}"
+            }
         };
 
         let pollTimer = null;
@@ -364,13 +417,16 @@
 
         // State management
         function showState(stateName) {
-            ['starting', 'running', 'error', 'stopping', 'stopped'].forEach(state => {
+            ['ready', 'starting', 'running', 'error', 'stopping', 'stopped'].forEach(state => {
                 const el = document.getElementById(`${state}-state`);
                 if (el) el.style.display = state === stateName ? 'block' : 'none';
             });
 
             const titleEl = document.getElementById('status-title');
             switch (stateName) {
+                case 'ready':
+                    titleEl.textContent = 'Lab Environment';
+                    break;
                 case 'starting':
                     titleEl.textContent = 'Preparing Your Lab';
                     break;
@@ -386,6 +442,43 @@
                 case 'stopped':
                     titleEl.textContent = 'Lab Stopped';
                     break;
+            }
+        }
+
+        // Start Lab - provision a new VM
+        async function startLab() {
+            showState('starting');
+
+            try {
+                const response = await fetch(config.provisionUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    credentials: 'include',
+                    body: JSON.stringify(config.sessionContext)
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    // Update config with new session info
+                    config.sessionId = data.session_id;
+                    config.statusUrl = `/api/session/${data.session_id}/status`;
+                    config.stopUrl = `/api/session/${data.session_id}`;
+                    config.recreateUrl = `/api/session/${data.session_id}/recreate`;
+                    config.labUrl = data.url;
+                    // Start polling for status
+                    startPolling();
+                } else {
+                    const errorData = await response.json();
+                    document.getElementById('error-message').textContent =
+                        errorData.detail || 'Failed to start lab environment.';
+                    showState('error');
+                }
+            } catch (error) {
+                document.getElementById('error-message').textContent =
+                    'Failed to connect to server. Please try again.';
+                showState('error');
             }
         }
 
@@ -498,7 +591,7 @@
                 const data = await response.json();
                 updateUI(data);
             } catch (error) {
-                console.error('Error polling status:', error);
+                // Silently ignore polling errors - will retry on next interval
             }
         }
 
@@ -533,7 +626,6 @@
                     showState('running');
                 }
             } catch (error) {
-                console.error('Error stopping session:', error);
                 alert('Failed to stop session. Please try again.');
                 showState('running');
             }
@@ -573,7 +665,6 @@
                     alert('Failed to recreate: ' + (data.detail || 'Unknown error'));
                 }
             } catch (error) {
-                console.error('Error recreating session:', error);
                 hideLoading();
                 alert('Failed to recreate session. Please try again.');
             }
@@ -597,10 +688,11 @@
         }
 
         function executeAction() {
+            const action = currentAction;  // Save before closeModal clears it
             closeModal();
-            if (currentAction === 'stop') {
+            if (action === 'stop') {
                 stopSession();
-            } else if (currentAction === 'recreate') {
+            } else if (action === 'recreate') {
                 recreateSession();
             }
         }
@@ -631,10 +723,14 @@
             if (config.initialStatus === 'running') {
                 showState('running');
                 document.getElementById('open-terminal-btn').href = config.labUrl;
+                // Poll once to get current status, but don't continuously poll
                 pollStatus();
-            } else {
+            } else if (config.initialStatus === 'starting') {
                 showState('starting');
                 startPolling();
+            } else {
+                // Default to 'ready' state - wait for user to click Start Lab
+                showState('ready');
             }
         });
 

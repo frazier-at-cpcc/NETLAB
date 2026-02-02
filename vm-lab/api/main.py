@@ -72,6 +72,12 @@ SSH_PRIVATE_KEY_PATH = os.getenv("SSH_PRIVATE_KEY_PATH", "/app/keys/id_ed25519")
 SSH_USER = os.getenv("SSH_USER", "kiosk")
 SSH_PASSWORD = os.getenv("SSH_PASSWORD", "redhat")  # Default RHA password
 
+# Nested environment SSH - auto-connect to student workstation
+NESTED_SSH_ENABLED = os.getenv("NESTED_SSH_ENABLED", "true").lower() == "true"
+NESTED_SSH_USER = os.getenv("NESTED_SSH_USER", "student")
+NESTED_SSH_HOST = os.getenv("NESTED_SSH_HOST", "workstation")
+NESTED_SSH_PASSWORD = os.getenv("NESTED_SSH_PASSWORD", "student")  # Default RHA student password
+
 # Session recordings directory
 RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/var/lib/vm-lab/recordings")
 
@@ -419,7 +425,7 @@ def clone_vm(proxmox: ProxmoxAPI, session_id: str, vm_name: str) -> int:
         newid=vmid,
         name=vm_name,
         target=PROXMOX_NODE,
-        snapname='base',  # Clone from the base snapshot
+        snapname='base-with-reporting',  # Clone from the base snapshot with reporting enabled
         full=0  # Linked clone (faster, uses snapshot as base)
     )
 
@@ -602,7 +608,16 @@ def spawn_ttyd_container(
 
         # Command that wraps SSH with script for recording
         # Use sshpass for password authentication (RHA images use password auth by default)
-        ssh_command = f"sshpass -p '{SSH_PASSWORD}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip}"
+        if NESTED_SSH_ENABLED:
+            # Chain SSH: first connect to outer VM, then auto-connect to nested workstation
+            # The -t flag allocates a pseudo-terminal for the nested SSH
+            inner_ssh = f"sshpass -p {NESTED_SSH_PASSWORD} ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {NESTED_SSH_USER}@{NESTED_SSH_HOST}"
+            ssh_command = f"sshpass -p '{SSH_PASSWORD}' ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip} \"{inner_ssh}\""
+            logger.info(f"Nested SSH enabled: connecting to {NESTED_SSH_USER}@{NESTED_SSH_HOST} via {SSH_USER}@{vm_ip}")
+        else:
+            # Direct SSH to the VM only
+            ssh_command = f"sshpass -p '{SSH_PASSWORD}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip}"
+
         script_command = f"script -q -f -t/recordings/{os.path.relpath(timing_path, RECORDINGS_DIR)} /recordings/{os.path.relpath(recording_path, RECORDINGS_DIR)} -c '{ssh_command}'"
 
         # Spawn ttyd container with recording

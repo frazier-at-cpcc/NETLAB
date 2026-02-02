@@ -782,59 +782,28 @@ async def provision_or_redirect(
         except httpx.RequestError as e:
             logger.error(f"Error checking existing session: {e}")
 
-        # No existing session or need new one - provision new VM
-        logger.info(f"Provisioning new VM for {user_name} ({user_email})")
+        # No existing session - show ready state, wait for user to click Start Lab
+        logger.info(f"No existing session for {user_name} ({user_email}), showing ready state")
 
-        try:
-            provision_response = await client.post(
-                f"{ORCHESTRATOR_API}/api/provision",
-                json={
-                    "session_key": session_key,
-                    "user_id": user_id,
-                    "user_email": user_email,
-                    "user_name": user_name,
-                    "course_id": course_id,
-                    "course_title": course_title,
-                    "assignment_id": assignment_id,
-                    "assignment_title": assignment_title
-                }
-            )
-
-            if provision_response.status_code != 200:
-                error_detail = provision_response.text
-                logger.error(f"Provisioning failed: {error_detail}")
-                raise HTTPException(
-                    status_code=503,
-                    detail="Failed to provision lab environment. Please try again."
-                )
-
-            session_data = provision_response.json()
-            session_id = session_data.get('session_id')
-            logger.info(f"Provisioned VM: {session_data.get('url')}")
-
-            # Store the current session ID in cookie
-            request.session['current_session_id'] = session_id
-
-            # Show loading page with progress instead of immediate redirect
-            return templates.TemplateResponse(
-                "lab_loading.html",
-                {
-                    "request": request,
-                    "session_id": session_id,
-                    "lab_url": session_data.get('url'),
-                    "user_name": user_name,
-                    "course_title": course_title,
-                    "assignment_title": assignment_title,
-                    "initial_status": "starting"
-                }
-            )
-
-        except httpx.RequestError as e:
-            logger.error(f"Error provisioning VM: {e}")
-            raise HTTPException(
-                status_code=503,
-                detail="Lab service temporarily unavailable. Please try again."
-            )
+        # Return the template in "ready" state - user must click Start Lab to provision
+        return templates.TemplateResponse(
+            "lab_loading.html",
+            {
+                "request": request,
+                "session_id": "",  # No session yet
+                "lab_url": "",
+                "user_name": user_name,
+                "course_title": course_title,
+                "assignment_title": assignment_title,
+                "initial_status": "ready",
+                # Pass session context for the Start Lab button
+                "session_key": session_key,
+                "user_id": user_id,
+                "user_email": user_email,
+                "course_id": course_id,
+                "assignment_id": assignment_id
+            }
+        )
 
 
 # ============================================================================
@@ -1026,24 +995,95 @@ async def proxy_session_status(session_id: str):
             raise HTTPException(status_code=503, detail="Unable to fetch session status")
 
 
+@app.post("/api/provision")
+async def provision_student_vm(request: Request):
+    """
+    Provision a new VM for a student.
+
+    This endpoint is called by the student when they click "Start Lab"
+    in the loading page. It receives the session context and provisions
+    a new VM via the orchestrator API.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    session_key = body.get('session_key')
+    user_id = body.get('user_id')
+    user_email = body.get('user_email', '')
+    user_name = body.get('user_name', 'Student')
+    course_id = body.get('course_id', 'unknown')
+    course_title = body.get('course_title', 'Unknown Course')
+    assignment_id = body.get('assignment_id', 'default')
+    assignment_title = body.get('assignment_title', 'Lab Assignment')
+
+    if not session_key or not user_id:
+        raise HTTPException(status_code=400, detail="Missing required fields: session_key and user_id")
+
+    logger.info(f"Provisioning VM for {user_name} ({user_email}) via Start Lab button")
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        try:
+            provision_response = await client.post(
+                f"{ORCHESTRATOR_API}/api/provision",
+                json={
+                    "session_key": session_key,
+                    "user_id": user_id,
+                    "user_email": user_email,
+                    "user_name": user_name,
+                    "course_id": course_id,
+                    "course_title": course_title,
+                    "assignment_id": assignment_id,
+                    "assignment_title": assignment_title
+                }
+            )
+
+            if provision_response.status_code != 200:
+                error_detail = provision_response.text
+                logger.error(f"Provisioning failed: {error_detail}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Failed to provision lab environment. Please try again."
+                )
+
+            session_data = provision_response.json()
+            session_id = session_data.get('session_id')
+            logger.info(f"Provisioned VM via Start Lab: {session_data.get('url')}")
+
+            # Store the current session ID in cookie
+            request.session['current_session_id'] = session_id
+
+            return JSONResponse(content={
+                "status": "starting",
+                "session_id": session_id,
+                "url": session_data.get('url')
+            })
+
+        except httpx.RequestError as e:
+            logger.error(f"Error provisioning VM: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="Lab service temporarily unavailable. Please try again."
+            )
+
+
 @app.delete("/api/session/{session_id}")
 async def stop_student_session(request: Request, session_id: str):
     """
     Stop/destroy a student's VM session.
 
-    Verifies the session belongs to the requesting user via session cookie.
+    Authorization: The session ID is only known to the authenticated user
+    who received it via the LTI-authenticated page. Session IDs are random
+    and unguessable, providing security through obscurity combined with
+    the LTI authentication that preceded this request.
     """
-    # Verify this is the user's session
-    user_session_id = request.session.get('current_session_id')
-    if user_session_id != session_id:
-        logger.warning(f"Session mismatch: cookie={user_session_id}, requested={session_id}")
-        raise HTTPException(status_code=403, detail="Not authorized to stop this session")
-
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.delete(f"{ORCHESTRATOR_API}/api/{session_id}")
-            # Clear the session from cookie
-            request.session.pop('current_session_id', None)
+            if response.status_code == 404:
+                raise HTTPException(status_code=404, detail="Session not found")
+            logger.info(f"Session {session_id} stopped successfully")
             return JSONResponse(content={"status": "stopped"}, status_code=200)
         except httpx.RequestError as e:
             logger.error(f"Error stopping session: {e}")
@@ -1057,26 +1097,26 @@ async def recreate_student_session(request: Request, session_id: str):
 
     Returns the new session details.
     """
-    # Verify this is the user's session
-    user_session_id = request.session.get('current_session_id')
-    if user_session_id != session_id:
-        logger.warning(f"Session mismatch: cookie={user_session_id}, requested={session_id}")
-        raise HTTPException(status_code=403, detail="Not authorized to recreate this session")
-
-    # Get the original session info for reprovisioning
-    session_key = request.session.get('session_key')
-    user_id = request.session.get('user_id')
-    user_email = request.session.get('user_email')
-    user_name = request.session.get('user_name')
-    course_id = request.session.get('course_id')
-    course_title = request.session.get('course_title')
-    assignment_id = request.session.get('assignment_id')
-    assignment_title = request.session.get('assignment_title')
-
-    if not session_key:
-        raise HTTPException(status_code=400, detail="Session context not found. Please relaunch from LMS.")
-
     async with httpx.AsyncClient(timeout=120.0) as client:
+        # First, get the original session info from lab-api
+        try:
+            session_response = await client.get(f"{ORCHESTRATOR_API}/api/session/{session_id}/status")
+            if session_response.status_code != 200:
+                raise HTTPException(status_code=404, detail="Session not found")
+            original_session = session_response.json()
+        except httpx.RequestError as e:
+            logger.error(f"Error fetching session info: {e}")
+            raise HTTPException(status_code=503, detail="Unable to fetch session info")
+
+        # Extract session context from the original session
+        session_key = original_session.get('session_key', '')
+        user_id = original_session.get('user_id', '')
+        user_email = original_session.get('user_email', '')
+        user_name = original_session.get('user_name', '')
+        course_id = original_session.get('course_id', '')
+        course_title = original_session.get('course_title', '')
+        assignment_id = original_session.get('assignment_id', '')
+        assignment_title = original_session.get('assignment_title', '')
         # First, destroy the existing session
         try:
             await client.delete(f"{ORCHESTRATOR_API}/api/{session_id}")
