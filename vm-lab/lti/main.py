@@ -88,11 +88,14 @@ app = FastAPI(
 )
 
 # Add session middleware for LTI 1.3 OIDC flow
+# same_site="none" and https_only=True required for iframe embedding from LMS
 app.add_middleware(
     SessionMiddleware,
     secret_key=SESSION_SECRET,
     session_cookie="lti_session",
-    max_age=3600
+    max_age=3600,
+    same_site="none",
+    https_only=True
 )
 
 # CORS middleware

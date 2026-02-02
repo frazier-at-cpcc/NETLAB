@@ -413,17 +413,19 @@ def clone_vm(proxmox: ProxmoxAPI, session_id: str, vm_name: str) -> int:
     logger.info(f"Cloning template {PROXMOX_TEMPLATE_ID} to VM {vmid} ({vm_name})")
 
     # Clone the template - returns a task ID (UPID)
+    # Using linked clone (full=0) from snapshot for faster provisioning
+    # Linked clones share the base snapshot's disk as a read-only base
     upid = proxmox.nodes(PROXMOX_NODE).qemu(PROXMOX_TEMPLATE_ID).clone.post(
         newid=vmid,
         name=vm_name,
         target=PROXMOX_NODE,
-        full=1,  # Full clone (not linked)
-        storage=PROXMOX_STORAGE
+        snapname='base',  # Clone from the base snapshot
+        full=0  # Linked clone (faster, uses snapshot as base)
     )
 
     # Wait for clone task to complete
     logger.info(f"Waiting for clone task {upid} to complete...")
-    wait_for_task(proxmox, PROXMOX_NODE, upid, timeout=600)  # 10 min for large images
+    wait_for_task(proxmox, PROXMOX_NODE, upid, timeout=120)  # Linked clones are fast
     logger.info(f"Clone completed for VM {vmid}")
 
     # Configure the cloned VM
