@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libvirt-dev \
     pkg-config \
     gcc \
+    python3-dev \
     qemu-utils \
     openssh-client \
     && rm -rf /var/lib/apt/lists/*
