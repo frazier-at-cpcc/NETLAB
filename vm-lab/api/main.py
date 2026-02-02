@@ -1223,6 +1223,22 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 else:
                     logger.warning(f"LMS connection command returned non-zero (continuing): {output[:200]}")
 
+                # Configure xAPI with user email
+                if request.user_email:
+                    logger.info(f"Configuring xAPI with user email: {request.user_email}")
+                    xapi_config_cmd = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {NESTED_SSH_USER}@{NESTED_SSH_HOST} 'lab xapi-config email {request.user_email}'"
+                    success, output = await run_ssh_command(
+                        vm_ip, SSH_USER, SSH_PASSWORD,
+                        xapi_config_cmd,
+                        timeout=60
+                    )
+                    if success:
+                        logger.info(f"xAPI email configuration successful: {output[:200]}")
+                    else:
+                        logger.warning(f"xAPI email configuration failed (continuing): {output[:200]}")
+                else:
+                    logger.warning("No user email provided, skipping xAPI configuration")
+
             # Create recording entry
             await create_recording_entry(
                 db, session_id,
