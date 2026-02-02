@@ -1,22 +1,24 @@
-FROM python:3.11
+FROM debian:bookworm
 
 WORKDIR /app
 
-# Install system dependencies including libvirt
+# Install Python and system dependencies
 RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-libvirt \
+    python3-venv \
     curl \
-    libvirt-dev \
-    libvirt-daemon-system \
-    pkg-config \
-    gcc \
-    python3-dev \
     qemu-utils \
     openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Python packages (skip libvirt-python since we use system package)
+RUN pip install --no-cache-dir --break-system-packages \
+    $(grep -v libvirt-python requirements.txt | tr '\n' ' ')
 
 # Copy application code
 COPY main.py .
