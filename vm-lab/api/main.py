@@ -546,6 +546,42 @@ async def wait_for_ssh(ip: str, timeout: int = 300) -> bool:
     return False
 
 
+async def run_ssh_command(ip: str, user: str, password: str, command: str, timeout: int = 60) -> tuple:
+    """Run a command via SSH and return (success, output)."""
+    import subprocess
+
+    ssh_cmd = [
+        "sshpass", "-p", password,
+        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=10",
+        f"{user}@{ip}",
+        command
+    ]
+
+    try:
+        result = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=timeout)
+            ),
+            timeout=timeout + 5
+        )
+        return result.returncode == 0, result.stdout + result.stderr
+    except Exception as e:
+        logger.error(f"SSH command failed: {e}")
+        return False, str(e)
+
+
+async def check_nested_host_ssh(ip: str, user: str, password: str, nested_host: str) -> bool:
+    """Check if a nested host is reachable via SSH from the outer VM."""
+    success, output = await run_ssh_command(
+        ip, user, password,
+        f"nc -z -w2 {nested_host} 22 && echo OK || echo FAIL",
+        timeout=15
+    )
+    return success and "OK" in output
+
+
 # ============================================================================
 # Docker/Traefik Management
 # ============================================================================
@@ -618,36 +654,15 @@ def spawn_ttyd_container(
         timing_rel_path = os.path.relpath(timing_path, RECORDINGS_DIR)
 
         if NESTED_SSH_ENABLED:
-            # Chain SSH: first connect to outer VM, then auto-connect to nested workstation
-            # Use SSHPASS env var (-e flag) to avoid quoting issues with passwords
-            # Inner SSH command includes a retry loop since nested VMs take time to boot
-            # The script waits for workstation to be reachable before connecting
-            wait_and_connect_script = f'''
-echo "Waiting for {NESTED_SSH_HOST} to become available..."
-for i in $(seq 1 60); do
-    if ping -c 1 -W 2 {NESTED_SSH_HOST} >/dev/null 2>&1; then
-        if nc -z -w 2 {NESTED_SSH_HOST} 22 2>/dev/null; then
-            echo "{NESTED_SSH_HOST} is ready. Connecting..."
-            sleep 1
-            SSHPASS=$INNER_PASS sshpass -e ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {NESTED_SSH_USER}@{NESTED_SSH_HOST}
-            exit $?
-        fi
-    fi
-    echo -ne "\\rWaiting for {NESTED_SSH_HOST}... ($i/60)  "
-    sleep 3
-done
-echo ""
-echo "{NESTED_SSH_HOST} did not become available after 3 minutes."
-echo "You can try manually: ssh {NESTED_SSH_USER}@{NESTED_SSH_HOST}"
-exec bash
-'''
-            # Escape for shell
-            escaped_script = wait_and_connect_script.replace("'", "'\\''")
-            ssh_command = f"sshpass -e ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip} bash -c '{escaped_script}'"
+            # Chain SSH: first connect to outer VM, then directly to nested workstation
+            # Nested VMs are already started and workstation is verified reachable by the provisioning process
+            # Use SSHPASS env var (-e flag) for outer connection (kiosk uses password)
+            # Inner connection to student@workstation uses SSH keys (no password needed)
+            inner_connect = f"ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {NESTED_SSH_USER}@{NESTED_SSH_HOST}"
+            ssh_command = f"sshpass -e ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip} {inner_connect}"
             logger.info(f"Nested SSH enabled: connecting to {NESTED_SSH_USER}@{NESTED_SSH_HOST} via {SSH_USER}@{vm_ip}")
             env_vars = {
                 "SSHPASS": SSH_PASSWORD,
-                "INNER_PASS": NESTED_SSH_PASSWORD,
             }
         else:
             # Direct SSH to the VM only
@@ -896,35 +911,80 @@ async def get_session_status(session_id: str):
     vm_ip = row['vm_ip']
     status_message = row['status_message']
 
-    # Define provisioning steps
+    # Define provisioning steps based on status and status_message
     if status == 'error':
         steps = [
             ProvisioningStep(id="create_vm", label="Creating virtual machine", status="completed"),
             ProvisioningStep(id="boot_vm", label="Booting system", status="error", message=status_message or "An error occurred"),
             ProvisioningStep(id="network", label="Configuring network", status="pending"),
             ProvisioningStep(id="ssh", label="Starting SSH service", status="pending"),
+            ProvisioningStep(id="nested_vms", label="Starting lab environment", status="pending"),
+            ProvisioningStep(id="lms_connect", label="Connecting to LMS", status="pending"),
             ProvisioningStep(id="terminal", label="Launching web terminal", status="pending"),
         ]
         progress = 20
         ready = False
         estimated_remaining = None
     elif status == 'starting':
-        if vm_ip:
+        if status_message == 'nested_starting':
+            # Running rht-vmctl start all
+            steps = [
+                ProvisioningStep(id="create_vm", label="Creating virtual machine", status="completed"),
+                ProvisioningStep(id="boot_vm", label="Booting system", status="completed"),
+                ProvisioningStep(id="network", label="Configuring network", status="completed"),
+                ProvisioningStep(id="ssh", label="Starting SSH service", status="completed"),
+                ProvisioningStep(id="nested_vms", label="Starting lab environment", status="in_progress", message="Starting nested VMs..."),
+                ProvisioningStep(id="lms_connect", label="Connecting to LMS", status="pending"),
+                ProvisioningStep(id="terminal", label="Launching web terminal", status="pending"),
+            ]
+            progress = 60
+            estimated_remaining = 180
+        elif status_message == 'nested_waiting':
+            # Waiting for workstation to be reachable
+            steps = [
+                ProvisioningStep(id="create_vm", label="Creating virtual machine", status="completed"),
+                ProvisioningStep(id="boot_vm", label="Booting system", status="completed"),
+                ProvisioningStep(id="network", label="Configuring network", status="completed"),
+                ProvisioningStep(id="ssh", label="Starting SSH service", status="completed"),
+                ProvisioningStep(id="nested_vms", label="Starting lab environment", status="in_progress", message="Waiting for workstation..."),
+                ProvisioningStep(id="lms_connect", label="Connecting to LMS", status="pending"),
+                ProvisioningStep(id="terminal", label="Launching web terminal", status="pending"),
+            ]
+            progress = 75
+            estimated_remaining = 90
+        elif status_message == 'lms_connecting':
+            # Connecting lab to LMS
+            steps = [
+                ProvisioningStep(id="create_vm", label="Creating virtual machine", status="completed"),
+                ProvisioningStep(id="boot_vm", label="Booting system", status="completed"),
+                ProvisioningStep(id="network", label="Configuring network", status="completed"),
+                ProvisioningStep(id="ssh", label="Starting SSH service", status="completed"),
+                ProvisioningStep(id="nested_vms", label="Starting lab environment", status="completed"),
+                ProvisioningStep(id="lms_connect", label="Connecting to LMS", status="in_progress", message="Configuring LMS integration..."),
+                ProvisioningStep(id="terminal", label="Launching web terminal", status="pending"),
+            ]
+            progress = 90
+            estimated_remaining = 30
+        elif vm_ip:
             steps = [
                 ProvisioningStep(id="create_vm", label="Creating virtual machine", status="completed"),
                 ProvisioningStep(id="boot_vm", label="Booting system", status="completed"),
                 ProvisioningStep(id="network", label="Configuring network", status="completed"),
                 ProvisioningStep(id="ssh", label="Starting SSH service", status="in_progress", message="Waiting for SSH..."),
+                ProvisioningStep(id="nested_vms", label="Starting lab environment", status="pending"),
+                ProvisioningStep(id="lms_connect", label="Connecting to LMS", status="pending"),
                 ProvisioningStep(id="terminal", label="Launching web terminal", status="pending"),
             ]
-            progress = 70
-            estimated_remaining = 60
+            progress = 40
+            estimated_remaining = 180
         else:
             steps = [
                 ProvisioningStep(id="create_vm", label="Creating virtual machine", status="completed"),
                 ProvisioningStep(id="boot_vm", label="Booting system", status="in_progress", message="VM is booting..."),
                 ProvisioningStep(id="network", label="Configuring network", status="pending"),
                 ProvisioningStep(id="ssh", label="Starting SSH service", status="pending"),
+                ProvisioningStep(id="nested_vms", label="Starting lab environment", status="pending"),
+                ProvisioningStep(id="lms_connect", label="Connecting to LMS", status="pending"),
                 ProvisioningStep(id="terminal", label="Launching web terminal", status="pending"),
             ]
             progress = 30
@@ -936,6 +996,8 @@ async def get_session_status(session_id: str):
             ProvisioningStep(id="boot_vm", label="Booting system", status="completed"),
             ProvisioningStep(id="network", label="Configuring network", status="completed"),
             ProvisioningStep(id="ssh", label="Starting SSH service", status="completed"),
+            ProvisioningStep(id="nested_vms", label="Starting lab environment", status="completed"),
+            ProvisioningStep(id="lms_connect", label="Connecting to LMS", status="completed"),
             ProvisioningStep(id="terminal", label="Launching web terminal", status="completed"),
         ]
         progress = 100
@@ -947,6 +1009,8 @@ async def get_session_status(session_id: str):
             ProvisioningStep(id="boot_vm", label="Booting system", status="pending"),
             ProvisioningStep(id="network", label="Configuring network", status="pending"),
             ProvisioningStep(id="ssh", label="Starting SSH service", status="pending"),
+            ProvisioningStep(id="nested_vms", label="Starting lab environment", status="pending"),
+            ProvisioningStep(id="lms_connect", label="Connecting to LMS", status="pending"),
             ProvisioningStep(id="terminal", label="Launching web terminal", status="pending"),
         ]
         progress = 0
@@ -1061,6 +1125,67 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 )
                 return
 
+            # If nested SSH is enabled, start nested VMs and wait for workstation
+            if NESTED_SSH_ENABLED:
+                # Update status to show we're starting nested VMs
+                await db.execute(
+                    "UPDATE vm_sessions SET status_message = 'nested_starting' WHERE session_id = $1",
+                    session_id
+                )
+                logger.info(f"Starting nested VMs on {vm_ip}...")
+
+                # Run rht-vmctl start all
+                success, output = await run_ssh_command(
+                    vm_ip, SSH_USER, SSH_PASSWORD,
+                    "rht-vmctl start all",
+                    timeout=120
+                )
+                if not success:
+                    logger.warning(f"rht-vmctl start all returned non-zero, but continuing: {output}")
+
+                # Update status to show we're waiting for workstation
+                await db.execute(
+                    "UPDATE vm_sessions SET status_message = 'nested_waiting' WHERE session_id = $1",
+                    session_id
+                )
+                logger.info(f"Waiting for {NESTED_SSH_HOST} to become available...")
+
+                # Wait for workstation to be reachable (up to 5 minutes)
+                workstation_ready = False
+                for attempt in range(60):  # 60 attempts * 5 seconds = 5 minutes
+                    if await check_nested_host_ssh(vm_ip, SSH_USER, SSH_PASSWORD, NESTED_SSH_HOST):
+                        workstation_ready = True
+                        logger.info(f"{NESTED_SSH_HOST} is now reachable")
+                        break
+                    await asyncio.sleep(5)
+
+                if not workstation_ready:
+                    logger.error(f"{NESTED_SSH_HOST} not reachable after timeout")
+                    await db.execute(
+                        "UPDATE vm_sessions SET status = 'error', status_message = 'Workstation timeout' WHERE session_id = $1",
+                        session_id
+                    )
+                    return
+
+                # Connect lab environment to LMS
+                await db.execute(
+                    "UPDATE vm_sessions SET status_message = 'lms_connecting' WHERE session_id = $1",
+                    session_id
+                )
+                logger.info(f"Connecting lab environment to LMS...")
+
+                # Run the LMS connection command on the workstation via the outer VM
+                lms_connect_cmd = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {NESTED_SSH_USER}@{NESTED_SSH_HOST} 'curl -sL nos120.labsconnect.org | bash'"
+                success, output = await run_ssh_command(
+                    vm_ip, SSH_USER, SSH_PASSWORD,
+                    lms_connect_cmd,
+                    timeout=120
+                )
+                if success:
+                    logger.info(f"LMS connection successful: {output[:200]}")
+                else:
+                    logger.warning(f"LMS connection command returned non-zero (continuing): {output[:200]}")
+
             # Create recording entry
             await create_recording_entry(
                 db, session_id,
@@ -1081,7 +1206,7 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                     """
                     UPDATE vm_sessions
                     SET status = 'running', started_at = CURRENT_TIMESTAMP,
-                        container_id = $2, container_name = $3
+                        container_id = $2, container_name = $3, status_message = NULL
                     WHERE session_id = $1
                     """,
                     session_id, container_id, f"ttyd-{session_id}"
