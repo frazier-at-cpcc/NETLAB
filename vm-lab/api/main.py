@@ -546,6 +546,21 @@ async def wait_for_ssh(ip: str, timeout: int = 300) -> bool:
     return False
 
 
+async def wait_for_ssh_login(ip: str, user: str, password: str, timeout: int = 180) -> bool:
+    """Wait for SSH login to be fully ready (system booted, not just port open)."""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        # Try a simple command to verify we can actually log in
+        success, output = await run_ssh_command(ip, user, password, "echo ready", timeout=10)
+        if success and "ready" in output:
+            logger.info(f"SSH login ready on {ip}")
+            return True
+        if "System is booting up" in output or "pam_nologin" in output:
+            logger.info(f"System still booting on {ip}, waiting...")
+        await asyncio.sleep(5)
+    return False
+
+
 async def run_ssh_command(ip: str, user: str, password: str, command: str, timeout: int = 60) -> tuple:
     """Run a command via SSH and return (success, output)."""
     import subprocess
@@ -579,6 +594,10 @@ async def check_nested_host_ssh(ip: str, user: str, password: str, nested_host: 
         f"nc -z -w2 {nested_host} 22 && echo OK || echo FAIL",
         timeout=15
     )
+    if not success:
+        logger.debug(f"check_nested_host_ssh failed for {nested_host}: {output}")
+    elif "OK" not in output:
+        logger.debug(f"check_nested_host_ssh: {nested_host} not reachable yet: {output}")
     return success and "OK" in output
 
 
@@ -1113,7 +1132,7 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 session_id, vm_ip
             )
 
-            # Wait for SSH
+            # Wait for SSH port to be open
             logger.info(f"Waiting for SSH on {vm_ip}...")
             ssh_ready = await wait_for_ssh(vm_ip, timeout=300)
 
@@ -1127,6 +1146,17 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
 
             # If nested SSH is enabled, start nested VMs and wait for workstation
             if NESTED_SSH_ENABLED:
+                # Wait for system to be fully booted (not just SSH port open)
+                logger.info(f"Waiting for system to be fully booted on {vm_ip}...")
+                login_ready = await wait_for_ssh_login(vm_ip, SSH_USER, SSH_PASSWORD, timeout=180)
+                if not login_ready:
+                    logger.error(f"SSH login not ready on {vm_ip} after timeout")
+                    await db.execute(
+                        "UPDATE vm_sessions SET status = 'error', status_message = 'SSH login timeout' WHERE session_id = $1",
+                        session_id
+                    )
+                    return
+
                 # Update status to show we're starting nested VMs
                 await db.execute(
                     "UPDATE vm_sessions SET status_message = 'nested_starting' WHERE session_id = $1",
@@ -1134,14 +1164,21 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 )
                 logger.info(f"Starting nested VMs on {vm_ip}...")
 
-                # Run rht-vmctl start all
-                success, output = await run_ssh_command(
-                    vm_ip, SSH_USER, SSH_PASSWORD,
-                    "rht-vmctl start all",
-                    timeout=120
-                )
-                if not success:
-                    logger.warning(f"rht-vmctl start all returned non-zero, but continuing: {output}")
+                # Run rht-vmctl start all (retry a few times if it fails)
+                for attempt in range(3):
+                    success, output = await run_ssh_command(
+                        vm_ip, SSH_USER, SSH_PASSWORD,
+                        "rht-vmctl start all",
+                        timeout=120
+                    )
+                    if success:
+                        logger.info(f"rht-vmctl start all succeeded on attempt {attempt + 1}")
+                        break
+                    logger.warning(f"rht-vmctl start all attempt {attempt + 1} failed: {output}")
+                    if attempt < 2:
+                        await asyncio.sleep(10)
+                else:
+                    logger.warning(f"rht-vmctl start all failed after 3 attempts, continuing anyway")
 
                 # Update status to show we're waiting for workstation
                 await db.execute(

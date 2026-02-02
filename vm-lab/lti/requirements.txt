@@ -7,6 +7,7 @@ httpx==0.26.0
 
 # Database
 asyncpg==0.29.0
+redis==5.0.1
 
 # Session management
 itsdangerous==2.1.2

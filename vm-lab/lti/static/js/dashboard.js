@@ -68,8 +68,20 @@ function formatFileSize(bytes) {
 // API Calls
 async function apiCall(endpoint, options = {}) {
     const baseUrl = window.dashboardConfig?.apiBase || '';
+    const token = window.dashboardConfig?.token || '';
+
+    // Add Authorization header with token
+    const headers = {
+        ...options.headers,
+        'Authorization': `Bearer ${token}`
+    };
+
     try {
-        const response = await fetch(`${baseUrl}${endpoint}`, options);
+        const response = await fetch(`${baseUrl}${endpoint}`, {
+            ...options,
+            headers,
+            credentials: 'include'
+        });
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -314,7 +326,8 @@ async function playRecording(recordingId) {
         }
         container.innerHTML = '';
 
-        const castUrl = `${window.dashboardConfig?.apiBase || ''}/api/recordings/${recordingId}/cast`;
+        const token = window.dashboardConfig?.token || '';
+        const castUrl = `${window.dashboardConfig?.apiBase || ''}/api/recordings/${recordingId}/cast?_token=${encodeURIComponent(token)}`;
 
         currentPlayer = AsciinemaPlayer.create(
             castUrl,
@@ -375,7 +388,11 @@ async function viewText(recordingId) {
 
     try {
         const baseUrl = window.dashboardConfig?.apiBase || '';
-        const response = await fetch(`${baseUrl}/api/recordings/${recordingId}/view`);
+        const token = window.dashboardConfig?.token || '';
+        const response = await fetch(`${baseUrl}/api/recordings/${recordingId}/view`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+            credentials: 'include'
+        });
         const text = await response.text();
         content.textContent = text || '(Empty recording)';
     } catch (error) {
@@ -483,11 +500,14 @@ async function launchDemoVM() {
     showDemoVMLoading();
 
     try {
+        const token = window.dashboardConfig?.token || '';
         const response = await fetch('/api/demo-vm', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
-            }
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            credentials: 'include'
         });
 
         if (!response.ok) {
@@ -520,8 +540,13 @@ async function destroyDemoVM() {
     }
 
     try {
+        const token = window.dashboardConfig?.token || '';
         const response = await fetch(`/api/demo-vm`, {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            },
+            credentials: 'include'
         });
 
         if (!response.ok) {
