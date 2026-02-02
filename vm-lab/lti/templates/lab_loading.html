@@ -3,193 +3,312 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lab Environment - Red Hat Academy</title>
-    <link rel="stylesheet" href="/static/css/loading.css">
+    <title>Central Piedmont LabsConnect</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        cpcc: {
+                            primary: '#00533E',
+                            secondary: '#FFC72C',
+                            dark: '#003D2E',
+                            light: '#E8F5F1'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @keyframes pulse-ring {
+            0% { transform: scale(0.8); opacity: 1; }
+            100% { transform: scale(1.4); opacity: 0; }
+        }
+        .animate-pulse-ring {
+            animation: pulse-ring 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes progress-shine {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        .progress-shine::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            animation: progress-shine 2s infinite;
+        }
+    </style>
 </head>
-<body>
-    <div class="loading-container">
-        <header>
-            <h1>Red Hat Academy Lab</h1>
-        </header>
+<body class="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-cpcc-dark">
+    <!-- Header -->
+    <header class="bg-cpcc-primary shadow-lg">
+        <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 bg-cpcc-secondary rounded-lg flex items-center justify-center">
+                    <svg class="w-6 h-6 text-cpcc-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="text-white font-bold text-lg">Central Piedmont LabsConnect</h1>
+                    <p class="text-cpcc-secondary text-xs font-medium">Virtual Lab Environment</p>
+                </div>
+            </div>
+            <div class="text-right text-white/80 text-sm hidden sm:block">
+                <p class="font-medium">{{ user_name }}</p>
+                <p class="text-xs text-white/60">{{ course_title }}</p>
+            </div>
+        </div>
+    </header>
 
-        <main>
-            <div class="card">
-                <div class="card-header">
-                    <h2 id="status-title">Lab Environment</h2>
-                    <p class="subtitle">{{ assignment_title }}</p>
+    <!-- Main Content -->
+    <main class="flex-1 flex items-center justify-center p-4 sm:p-8">
+        <div class="w-full max-w-lg">
+            <!-- Card -->
+            <div class="bg-white rounded-2xl shadow-2xl overflow-hidden">
+                <!-- Card Header -->
+                <div class="bg-gradient-to-r from-cpcc-primary to-cpcc-dark px-6 py-5">
+                    <h2 id="status-title" class="text-xl font-bold text-white">Lab Environment</h2>
+                    <p class="text-cpcc-secondary text-sm mt-1">{{ assignment_title }}</p>
                 </div>
 
-                <div class="card-body">
-                    <!-- Starting State: Progress -->
-                    <div id="starting-state" class="state-container" style="{% if initial_status != 'starting' %}display: none;{% endif %}">
-                        <!-- Progress Bar -->
-                        <div class="progress-container">
-                            <div class="progress-bar">
-                                <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+                <!-- Card Body -->
+                <div class="p-6 relative min-h-[350px]">
+                    <!-- Starting State -->
+                    <div id="starting-state" class="space-y-6" style="{% if initial_status != 'starting' %}display: none;{% endif %}">
+                        <!-- Progress Section -->
+                        <div class="space-y-2">
+                            <div class="flex justify-between text-sm">
+                                <span class="font-medium text-slate-700">Provisioning Lab</span>
+                                <span id="progress-percent" class="font-bold text-cpcc-primary">0%</span>
                             </div>
-                            <div class="progress-text">
-                                <span id="progress-percent">0%</span>
-                                <span id="time-remaining"></span>
+                            <div class="h-3 bg-slate-200 rounded-full overflow-hidden">
+                                <div id="progress-fill" class="h-full bg-gradient-to-r from-cpcc-primary to-emerald-500 rounded-full transition-all duration-500 relative progress-shine" style="width: 0%"></div>
                             </div>
+                            <p id="time-remaining" class="text-xs text-slate-500 text-right"></p>
                         </div>
 
-                        <!-- Steps List -->
-                        <div class="steps-container">
-                            <ul class="steps-list" id="steps-list">
-                                <li class="step pending" data-step="create_vm">
-                                    <span class="step-icon"></span>
-                                    <span class="step-label">Creating virtual machine</span>
-                                    <span class="step-status"></span>
-                                </li>
-                                <li class="step pending" data-step="boot_vm">
-                                    <span class="step-icon"></span>
-                                    <span class="step-label">Booting system</span>
-                                    <span class="step-status"></span>
-                                </li>
-                                <li class="step pending" data-step="network">
-                                    <span class="step-icon"></span>
-                                    <span class="step-label">Configuring network</span>
-                                    <span class="step-status"></span>
-                                </li>
-                                <li class="step pending" data-step="ssh">
-                                    <span class="step-icon"></span>
-                                    <span class="step-label">Starting SSH service</span>
-                                    <span class="step-status"></span>
-                                </li>
-                                <li class="step pending" data-step="terminal">
-                                    <span class="step-icon"></span>
-                                    <span class="step-label">Launching web terminal</span>
-                                    <span class="step-status"></span>
-                                </li>
-                            </ul>
+                        <!-- Steps -->
+                        <div class="space-y-3">
+                            <div class="step flex items-center p-3 rounded-lg bg-slate-50 border border-slate-200" data-step="create_vm">
+                                <div class="step-icon w-8 h-8 rounded-full bg-slate-300 flex items-center justify-center mr-3 flex-shrink-0">
+                                    <svg class="w-4 h-4 text-slate-500 hidden check-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+                                    </svg>
+                                    <div class="w-3 h-3 rounded-full bg-slate-400 spinner hidden"></div>
+                                </div>
+                                <div class="flex-1">
+                                    <p class="step-label font-medium text-slate-700 text-sm">Creating virtual machine</p>
+                                    <p class="step-status text-xs text-slate-500"></p>
+                                </div>
+                            </div>
+
+                            <div class="step flex items-center p-3 rounded-lg bg-slate-50 border border-slate-200" data-step="boot_vm">
+                                <div class="step-icon w-8 h-8 rounded-full bg-slate-300 flex items-center justify-center mr-3 flex-shrink-0">
+                                    <svg class="w-4 h-4 text-white hidden check-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+                                    </svg>
+                                    <div class="w-3 h-3 rounded-full bg-slate-400 spinner hidden"></div>
+                                </div>
+                                <div class="flex-1">
+                                    <p class="step-label font-medium text-slate-700 text-sm">Booting system</p>
+                                    <p class="step-status text-xs text-slate-500"></p>
+                                </div>
+                            </div>
+
+                            <div class="step flex items-center p-3 rounded-lg bg-slate-50 border border-slate-200" data-step="network">
+                                <div class="step-icon w-8 h-8 rounded-full bg-slate-300 flex items-center justify-center mr-3 flex-shrink-0">
+                                    <svg class="w-4 h-4 text-white hidden check-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+                                    </svg>
+                                    <div class="w-3 h-3 rounded-full bg-slate-400 spinner hidden"></div>
+                                </div>
+                                <div class="flex-1">
+                                    <p class="step-label font-medium text-slate-700 text-sm">Configuring network</p>
+                                    <p class="step-status text-xs text-slate-500"></p>
+                                </div>
+                            </div>
+
+                            <div class="step flex items-center p-3 rounded-lg bg-slate-50 border border-slate-200" data-step="ssh">
+                                <div class="step-icon w-8 h-8 rounded-full bg-slate-300 flex items-center justify-center mr-3 flex-shrink-0">
+                                    <svg class="w-4 h-4 text-white hidden check-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+                                    </svg>
+                                    <div class="w-3 h-3 rounded-full bg-slate-400 spinner hidden"></div>
+                                </div>
+                                <div class="flex-1">
+                                    <p class="step-label font-medium text-slate-700 text-sm">Starting SSH service</p>
+                                    <p class="step-status text-xs text-slate-500"></p>
+                                </div>
+                            </div>
+
+                            <div class="step flex items-center p-3 rounded-lg bg-slate-50 border border-slate-200" data-step="terminal">
+                                <div class="step-icon w-8 h-8 rounded-full bg-slate-300 flex items-center justify-center mr-3 flex-shrink-0">
+                                    <svg class="w-4 h-4 text-white hidden check-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+                                    </svg>
+                                    <div class="w-3 h-3 rounded-full bg-slate-400 spinner hidden"></div>
+                                </div>
+                                <div class="flex-1">
+                                    <p class="step-label font-medium text-slate-700 text-sm">Launching web terminal</p>
+                                    <p class="step-status text-xs text-slate-500"></p>
+                                </div>
+                            </div>
                         </div>
 
                         <!-- Info Box -->
-                        <div class="info-box">
-                            <p>Your dedicated RHEL virtual machine is being prepared. This usually takes 1-2 minutes.</p>
+                        <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                            <p class="text-sm text-blue-800">Your dedicated virtual machine is being prepared. This usually takes less than a minute.</p>
                         </div>
 
                         <!-- Cancel Button -->
-                        <div class="action-buttons">
-                            <button class="btn btn-secondary" onclick="stopSession()" id="cancel-btn">
+                        <div class="flex justify-center">
+                            <button onclick="confirmStop()" class="px-6 py-2 text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition font-medium text-sm">
                                 Cancel
                             </button>
                         </div>
                     </div>
 
-                    <!-- Running State: Controls -->
-                    <div id="running-state" class="state-container" style="{% if initial_status != 'running' %}display: none;{% endif %}">
-                        <div class="ready-icon success">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                            </svg>
-                        </div>
-                        <h3 class="state-title success">Your Lab is Ready!</h3>
-                        <p class="state-description">Your RHEL virtual machine is running and ready for use.</p>
-
-                        <div class="vm-info">
-                            <div class="vm-info-item">
-                                <span class="label">Status:</span>
-                                <span class="value status-running">Running</span>
-                            </div>
-                            <div class="vm-info-item" id="vm-ip-row" style="display: none;">
-                                <span class="label">VM IP:</span>
-                                <span class="value" id="vm-ip">-</span>
+                    <!-- Running State -->
+                    <div id="running-state" class="space-y-6" style="{% if initial_status != 'running' %}display: none;{% endif %}">
+                        <!-- Success Icon -->
+                        <div class="flex justify-center">
+                            <div class="relative">
+                                <div class="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center">
+                                    <svg class="w-10 h-10 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                    </svg>
+                                </div>
+                                <div class="absolute inset-0 w-20 h-20 bg-emerald-400 rounded-full animate-pulse-ring opacity-30"></div>
                             </div>
                         </div>
 
-                        <div class="action-buttons primary-actions">
-                            <a href="#" id="open-terminal-btn" class="btn btn-primary btn-lg" target="_blank">
-                                Open Terminal
-                            </a>
+                        <div class="text-center">
+                            <h3 class="text-xl font-bold text-emerald-600">Your Lab is Ready!</h3>
+                            <p class="text-slate-500 text-sm mt-1">Your virtual machine is running and ready for use.</p>
                         </div>
 
-                        <div class="action-buttons secondary-actions">
-                            <button class="btn btn-warning" onclick="confirmRecreate()" id="recreate-btn">
+                        <!-- VM Info -->
+                        <div class="bg-slate-50 rounded-lg p-4 space-y-2">
+                            <div class="flex justify-between items-center">
+                                <span class="text-sm text-slate-500">Status</span>
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">
+                                    <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full mr-1.5 animate-pulse"></span>
+                                    Running
+                                </span>
+                            </div>
+                            <div id="vm-ip-row" class="flex justify-between items-center" style="display: none;">
+                                <span class="text-sm text-slate-500">VM IP</span>
+                                <span id="vm-ip" class="font-mono text-sm text-slate-700">-</span>
+                            </div>
+                        </div>
+
+                        <!-- Primary Action -->
+                        <a href="#" id="open-terminal-btn" target="_blank"
+                           class="block w-full py-4 bg-gradient-to-r from-cpcc-primary to-cpcc-dark text-white font-bold text-center rounded-xl hover:shadow-lg hover:scale-[1.02] transition-all duration-200">
+                            Open Terminal
+                        </a>
+
+                        <!-- Secondary Actions -->
+                        <div class="flex gap-3">
+                            <button onclick="confirmRecreate()"
+                                    class="flex-1 py-2.5 px-4 bg-amber-50 text-amber-700 font-medium rounded-lg hover:bg-amber-100 transition text-sm border border-amber-200">
                                 Recreate VM
                             </button>
-                            <button class="btn btn-danger" onclick="confirmStop()" id="stop-btn">
+                            <button onclick="confirmStop()"
+                                    class="flex-1 py-2.5 px-4 bg-red-50 text-red-700 font-medium rounded-lg hover:bg-red-100 transition text-sm border border-red-200">
                                 Stop Lab
                             </button>
                         </div>
 
-                        <div class="help-text">
-                            <p><strong>Recreate:</strong> Destroys your current VM and creates a fresh one. Use if your VM is unresponsive.</p>
-                            <p><strong>Stop:</strong> Shuts down your VM. You can start a new one by relaunching from your LMS.</p>
+                        <!-- Help Text -->
+                        <div class="text-xs text-slate-500 space-y-1 bg-slate-50 rounded-lg p-3">
+                            <p><strong class="text-slate-700">Recreate:</strong> Destroys current VM and creates a fresh one.</p>
+                            <p><strong class="text-slate-700">Stop:</strong> Shuts down your VM. Relaunch from your LMS to start again.</p>
                         </div>
                     </div>
 
                     <!-- Error State -->
-                    <div id="error-state" class="state-container" style="display: none;">
-                        <div class="ready-icon error">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
-                            </svg>
+                    <div id="error-state" class="space-y-6" style="display: none;">
+                        <div class="flex justify-center">
+                            <div class="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center">
+                                <svg class="w-10 h-10 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                                </svg>
+                            </div>
                         </div>
-                        <h3 class="state-title error">Something Went Wrong</h3>
-                        <p class="state-description" id="error-message">An error occurred while provisioning your lab environment.</p>
 
-                        <div class="action-buttons">
-                            <button class="btn btn-primary btn-lg" onclick="retryProvisioning()">
-                                Try Again
-                            </button>
+                        <div class="text-center">
+                            <h3 class="text-xl font-bold text-red-600">Something Went Wrong</h3>
+                            <p id="error-message" class="text-slate-500 text-sm mt-1">An error occurred while provisioning your lab environment.</p>
                         </div>
+
+                        <button onclick="retryProvisioning()"
+                                class="w-full py-3 bg-cpcc-primary text-white font-bold rounded-xl hover:bg-cpcc-dark transition">
+                            Try Again
+                        </button>
                     </div>
 
                     <!-- Stopped State -->
-                    <div id="stopped-state" class="state-container" style="display: none;">
-                        <div class="ready-icon neutral">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/>
-                            </svg>
+                    <div id="stopped-state" class="space-y-6" style="display: none;">
+                        <div class="flex justify-center">
+                            <div class="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center">
+                                <svg class="w-10 h-10 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"/>
+                                </svg>
+                            </div>
                         </div>
-                        <h3 class="state-title neutral">Lab Stopped</h3>
-                        <p class="state-description">Your lab environment has been stopped.</p>
 
-                        <div class="action-buttons">
-                            <button class="btn btn-primary btn-lg" onclick="window.location.reload()">
-                                Start New Lab
-                            </button>
+                        <div class="text-center">
+                            <h3 class="text-xl font-bold text-slate-600">Lab Stopped</h3>
+                            <p class="text-slate-500 text-sm mt-1">Your lab environment has been stopped.</p>
                         </div>
+
+                        <button onclick="window.location.reload()"
+                                class="w-full py-3 bg-cpcc-primary text-white font-bold rounded-xl hover:bg-cpcc-dark transition">
+                            Start New Lab
+                        </button>
                     </div>
 
                     <!-- Loading Overlay -->
-                    <div id="loading-overlay" class="loading-overlay" style="display: none;">
-                        <div class="loading-spinner"></div>
-                        <p id="loading-message">Processing...</p>
-                    </div>
-                </div>
-
-                <div class="card-footer">
-                    <div class="session-info">
-                        <span class="info-item">
-                            <strong>Student:</strong> {{ user_name }}
-                        </span>
-                        <span class="info-item">
-                            <strong>Course:</strong> {{ course_title }}
-                        </span>
+                    <div id="loading-overlay" class="absolute inset-0 bg-white/90 flex flex-col items-center justify-center z-50 rounded-b-2xl" style="display: none;">
+                        <div class="w-12 h-12 border-4 border-slate-200 border-t-cpcc-primary rounded-full animate-spin"></div>
+                        <p id="loading-message" class="mt-4 text-slate-600 font-medium">Processing...</p>
                     </div>
                 </div>
             </div>
-        </main>
 
-        <footer>
-            <p>Need help? Contact your instructor.</p>
-        </footer>
-    </div>
+            <!-- Footer -->
+            <p class="text-center text-white/50 text-sm mt-6">Need help? Contact your instructor.</p>
+        </div>
+    </main>
 
     <!-- Confirmation Modal -->
-    <div id="confirm-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 id="modal-title">Confirm Action</h3>
+    <div id="confirm-modal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 hidden">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden transform transition-all">
+            <div class="p-6">
+                <div class="flex items-center justify-center w-12 h-12 bg-red-100 rounded-full mx-auto mb-4">
+                    <svg class="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                </div>
+                <h3 id="modal-title" class="text-lg font-bold text-slate-900 text-center">Confirm Action</h3>
+                <p id="modal-message" class="text-slate-500 text-sm text-center mt-2">Are you sure?</p>
             </div>
-            <div class="modal-body">
-                <p id="modal-message">Are you sure?</p>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                <button class="btn btn-danger" id="modal-confirm-btn" onclick="executeAction()">Confirm</button>
+            <div class="flex border-t border-slate-200">
+                <button onclick="closeModal()" class="flex-1 py-3 text-slate-600 font-medium hover:bg-slate-50 transition">
+                    Cancel
+                </button>
+                <button id="modal-confirm-btn" onclick="executeAction()" class="flex-1 py-3 text-red-600 font-medium hover:bg-red-50 transition border-l border-slate-200">
+                    Confirm
+                </button>
             </div>
         </div>
     </div>
@@ -216,11 +335,10 @@
                 if (el) el.style.display = state === stateName ? 'block' : 'none';
             });
 
-            // Update title
             const titleEl = document.getElementById('status-title');
             switch (stateName) {
                 case 'starting':
-                    titleEl.textContent = 'Preparing Your Lab Environment';
+                    titleEl.textContent = 'Preparing Your Lab';
                     break;
                 case 'running':
                     titleEl.textContent = 'Lab Environment';
@@ -234,7 +352,6 @@
             }
         }
 
-        // Show/hide loading overlay
         function showLoading(message) {
             document.getElementById('loading-message').textContent = message || 'Processing...';
             document.getElementById('loading-overlay').style.display = 'flex';
@@ -244,7 +361,37 @@
             document.getElementById('loading-overlay').style.display = 'none';
         }
 
-        // Update the UI based on status response
+        function updateStepUI(stepEl, status) {
+            const iconContainer = stepEl.querySelector('.step-icon');
+            const checkIcon = stepEl.querySelector('.check-icon');
+            const spinner = stepEl.querySelector('.spinner');
+
+            // Reset
+            iconContainer.className = 'step-icon w-8 h-8 rounded-full flex items-center justify-center mr-3 flex-shrink-0';
+            checkIcon.classList.add('hidden');
+            spinner.classList.add('hidden');
+
+            switch (status) {
+                case 'completed':
+                    iconContainer.classList.add('bg-emerald-500');
+                    checkIcon.classList.remove('hidden');
+                    stepEl.querySelector('.step-label').classList.add('text-emerald-700');
+                    break;
+                case 'in_progress':
+                    iconContainer.classList.add('bg-cpcc-primary');
+                    spinner.classList.remove('hidden');
+                    spinner.classList.add('animate-spin', 'border-2', 'border-white', 'border-t-transparent');
+                    stepEl.querySelector('.step-label').classList.add('text-cpcc-primary', 'font-semibold');
+                    break;
+                case 'error':
+                    iconContainer.classList.add('bg-red-500');
+                    stepEl.querySelector('.step-label').classList.add('text-red-700');
+                    break;
+                default:
+                    iconContainer.classList.add('bg-slate-300');
+            }
+        }
+
         function updateUI(data) {
             if (data.status === 'error') {
                 showState('error');
@@ -261,7 +408,6 @@
             }
 
             if (data.ready && data.url) {
-                // Running state
                 showState('running');
                 document.getElementById('open-terminal-btn').href = data.url;
                 if (data.vm_ip) {
@@ -272,10 +418,9 @@
                 return;
             }
 
-            // Still starting - update progress
             showState('starting');
 
-            // Update progress bar
+            // Update progress
             const progressFill = document.getElementById('progress-fill');
             const progressPercent = document.getElementById('progress-percent');
             const timeRemaining = document.getElementById('time-remaining');
@@ -286,11 +431,7 @@
             if (data.estimated_seconds_remaining !== null && data.estimated_seconds_remaining > 0) {
                 const mins = Math.floor(data.estimated_seconds_remaining / 60);
                 const secs = data.estimated_seconds_remaining % 60;
-                if (mins > 0) {
-                    timeRemaining.textContent = `~${mins}m ${secs}s remaining`;
-                } else {
-                    timeRemaining.textContent = `~${secs}s remaining`;
-                }
+                timeRemaining.textContent = mins > 0 ? `~${mins}m ${secs}s remaining` : `~${secs}s remaining`;
             } else {
                 timeRemaining.textContent = '';
             }
@@ -300,8 +441,7 @@
                 data.steps.forEach(step => {
                     const stepEl = document.querySelector(`[data-step="${step.id}"]`);
                     if (stepEl) {
-                        stepEl.classList.remove('pending', 'in_progress', 'completed', 'error');
-                        stepEl.classList.add(step.status);
+                        updateStepUI(stepEl, step.status);
                         const statusEl = stepEl.querySelector('.step-status');
                         statusEl.textContent = step.message || '';
                     }
@@ -309,7 +449,6 @@
             }
         }
 
-        // Poll for status updates
         async function pollStatus() {
             try {
                 const response = await fetch(config.statusUrl);
@@ -318,9 +457,7 @@
                     stopPolling();
                     return;
                 }
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
                 updateUI(data);
             } catch (error) {
@@ -340,7 +477,6 @@
             }
         }
 
-        // Actions
         async function stopSession() {
             showLoading('Stopping lab...');
             try {
@@ -366,21 +502,22 @@
                 const response = await fetch(config.recreateUrl, { method: 'POST' });
                 if (response.ok) {
                     const data = await response.json();
-                    // Update config with new session
                     config.sessionId = data.session_id;
                     config.statusUrl = `/api/session/${data.session_id}/status`;
                     config.stopUrl = `/api/session/${data.session_id}`;
                     config.recreateUrl = `/api/session/${data.session_id}/recreate`;
                     config.labUrl = data.url;
 
-                    // Reset steps UI
+                    // Reset steps
                     document.querySelectorAll('.step').forEach(step => {
-                        step.classList.remove('completed', 'in_progress', 'error');
-                        step.classList.add('pending');
+                        const iconContainer = step.querySelector('.step-icon');
+                        iconContainer.className = 'step-icon w-8 h-8 rounded-full bg-slate-300 flex items-center justify-center mr-3 flex-shrink-0';
+                        step.querySelector('.check-icon').classList.add('hidden');
+                        step.querySelector('.spinner').classList.add('hidden');
+                        step.querySelector('.step-label').className = 'step-label font-medium text-slate-700 text-sm';
                         step.querySelector('.step-status').textContent = '';
                     });
 
-                    // Switch to starting state and begin polling
                     showState('starting');
                     hideLoading();
                     startPolling();
@@ -400,16 +537,16 @@
             window.location.reload();
         }
 
-        // Confirmation modal
+        // Modal functions
         function showModal(title, message, action) {
             currentAction = action;
             document.getElementById('modal-title').textContent = title;
             document.getElementById('modal-message').textContent = message;
-            document.getElementById('confirm-modal').classList.add('active');
+            document.getElementById('confirm-modal').classList.remove('hidden');
         }
 
         function closeModal() {
-            document.getElementById('confirm-modal').classList.remove('active');
+            document.getElementById('confirm-modal').classList.add('hidden');
             currentAction = null;
         }
 
@@ -425,7 +562,7 @@
         function confirmStop() {
             showModal(
                 'Stop Lab?',
-                'This will shut down your virtual machine. All unsaved work will be lost. You can start a new lab by relaunching from your LMS.',
+                'This will shut down your virtual machine. All unsaved work will be lost.',
                 'stop'
             );
         }
@@ -433,19 +570,21 @@
         function confirmRecreate() {
             showModal(
                 'Recreate Lab?',
-                'This will destroy your current VM and create a fresh one. All unsaved work will be lost. Use this if your VM is unresponsive.',
+                'This will destroy your current VM and create a fresh one. All unsaved work will be lost.',
                 'recreate'
             );
         }
 
+        // Close modal on backdrop click
+        document.getElementById('confirm-modal').addEventListener('click', function(e) {
+            if (e.target === this) closeModal();
+        });
+
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
-            // Set initial state based on server data
             if (config.initialStatus === 'running') {
-                // Show running state immediately with the URL we have
                 showState('running');
                 document.getElementById('open-terminal-btn').href = config.labUrl;
-                // Poll once to get any additional details (like VM IP)
                 pollStatus();
             } else {
                 showState('starting');

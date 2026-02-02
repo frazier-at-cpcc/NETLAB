@@ -1,4 +1,4 @@
-// VM Lab Instructor Dashboard JavaScript
+// Central Piedmont LabsConnect - Instructor Dashboard JavaScript
 
 let currentPage = 1;
 const pageSize = 20;
@@ -92,7 +92,7 @@ async function loadStats() {
 
 async function loadRecordings() {
     const tbody = document.getElementById('recordings-body');
-    tbody.innerHTML = '<tr><td colspan="7" class="loading">Loading recordings...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="px-6 py-8 text-center text-slate-500">Loading recordings...</td></tr>';
 
     // Build query params
     const params = new URLSearchParams();
@@ -105,7 +105,6 @@ async function loadRecordings() {
     const assignment = document.getElementById('filter-assignment').value;
 
     if (studentFilter) {
-        // Search both name and email
         if (studentFilter.includes('@')) {
             params.append('user_email', studentFilter);
         } else {
@@ -116,7 +115,6 @@ async function loadRecordings() {
     if (dateTo) params.append('date_to', dateTo);
     if (assignment) params.append('assignment_id', assignment);
 
-    // Add course filter if available
     if (window.dashboardConfig?.courseId) {
         params.append('course_id', window.dashboardConfig.courseId);
     }
@@ -124,7 +122,7 @@ async function loadRecordings() {
     const data = await apiCall(`/api/recordings?${params.toString()}`);
 
     if (!data || !data.recordings) {
-        tbody.innerHTML = '<tr><td colspan="7" class="no-data">Failed to load recordings</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="px-6 py-8 text-center text-slate-500">Failed to load recordings</td></tr>';
         return;
     }
 
@@ -132,31 +130,35 @@ async function loadRecordings() {
     updatePagination();
 
     if (data.recordings.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="no-data">No recordings found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="px-6 py-8 text-center text-slate-500">No recordings found</td></tr>';
         return;
     }
 
     tbody.innerHTML = data.recordings.map(recording => `
-        <tr>
-            <td>${escapeHtml(recording.user_name || 'Unknown')}</td>
-            <td>${escapeHtml(recording.user_email || 'Unknown')}</td>
-            <td>${escapeHtml(recording.assignment_title || recording.course_title || 'N/A')}</td>
-            <td>${formatDateTime(recording.started_at)}</td>
-            <td>${formatDuration(recording.duration_seconds)}</td>
-            <td><span class="status-badge status-${recording.status}">${recording.status}</span></td>
-            <td>
-                <div class="action-buttons">
-                    <button class="btn btn-primary btn-sm" onclick="playRecording(${recording.id})"
-                            data-tooltip="Play recording">
-                        &#9658; Play
+        <tr class="hover:bg-slate-50 transition">
+            <td class="px-6 py-4 text-sm font-medium text-slate-900">${escapeHtml(recording.user_name || 'Unknown')}</td>
+            <td class="px-6 py-4 text-sm text-slate-600">${escapeHtml(recording.user_email || 'Unknown')}</td>
+            <td class="px-6 py-4 text-sm text-slate-600">${escapeHtml(recording.assignment_title || recording.course_title || 'N/A')}</td>
+            <td class="px-6 py-4 text-sm text-slate-600">${formatDateTime(recording.started_at)}</td>
+            <td class="px-6 py-4 text-sm text-slate-600">${formatDuration(recording.duration_seconds)}</td>
+            <td class="px-6 py-4">
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusClasses(recording.status)}">
+                    ${recording.status}
+                </span>
+            </td>
+            <td class="px-6 py-4">
+                <div class="flex items-center gap-2">
+                    <button onclick="playRecording(${recording.id})"
+                            class="px-3 py-1.5 bg-cpcc-primary text-white text-xs font-medium rounded-lg hover:bg-cpcc-dark transition">
+                        Play
                     </button>
-                    <button class="btn btn-secondary btn-sm" onclick="viewText(${recording.id})"
-                            data-tooltip="View as text">
-                        &#128196; Text
+                    <button onclick="viewText(${recording.id})"
+                            class="px-3 py-1.5 bg-slate-100 text-slate-700 text-xs font-medium rounded-lg hover:bg-slate-200 transition">
+                        Text
                     </button>
-                    <button class="btn btn-secondary btn-sm" onclick="downloadRecording(${recording.id})"
-                            data-tooltip="Download files">
-                        &#8681; Download
+                    <button onclick="downloadRecording(${recording.id})"
+                            class="px-3 py-1.5 bg-slate-100 text-slate-700 text-xs font-medium rounded-lg hover:bg-slate-200 transition">
+                        Download
                     </button>
                 </div>
             </td>
@@ -164,17 +166,29 @@ async function loadRecordings() {
     `).join('');
 }
 
+function getStatusClasses(status) {
+    switch (status) {
+        case 'completed':
+            return 'bg-emerald-100 text-emerald-800';
+        case 'running':
+            return 'bg-blue-100 text-blue-800';
+        case 'error':
+            return 'bg-red-100 text-red-800';
+        default:
+            return 'bg-slate-100 text-slate-800';
+    }
+}
+
 async function loadActiveSessions() {
     const grid = document.getElementById('active-sessions-grid');
     const data = await apiCall('/api/sessions?status=running');
 
     if (!data || !data.sessions || data.sessions.length === 0) {
-        grid.innerHTML = '<p class="no-data">No active sessions</p>';
+        grid.innerHTML = '<p class="text-slate-500 text-sm col-span-full">No active sessions</p>';
         document.getElementById('active-sessions').textContent = '0';
         return;
     }
 
-    // Filter by course if specified
     let sessions = data.sessions;
     if (window.dashboardConfig?.courseId) {
         sessions = sessions.filter(s => s.course_id === window.dashboardConfig.courseId);
@@ -183,23 +197,32 @@ async function loadActiveSessions() {
     document.getElementById('active-sessions').textContent = sessions.length;
 
     if (sessions.length === 0) {
-        grid.innerHTML = '<p class="no-data">No active sessions for this course</p>';
+        grid.innerHTML = '<p class="text-slate-500 text-sm col-span-full">No active sessions for this course</p>';
         return;
     }
 
     grid.innerHTML = sessions.map(session => `
-        <div class="active-card">
-            <h4>${escapeHtml(session.user_name || 'Unknown Student')}</h4>
-            <p>${escapeHtml(session.user_email || '')}</p>
-            <p>VM: ${escapeHtml(session.vm_name || 'N/A')}</p>
-            <p class="time">Started: ${formatDateTime(session.created_at)}</p>
-            <p class="time">Expires: ${formatDateTime(session.expires_at)}</p>
+        <div class="bg-slate-50 rounded-xl p-4 border border-slate-200">
+            <div class="flex items-start justify-between mb-3">
+                <div>
+                    <h4 class="font-semibold text-slate-800">${escapeHtml(session.user_name || 'Unknown Student')}</h4>
+                    <p class="text-sm text-slate-500">${escapeHtml(session.user_email || '')}</p>
+                </div>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">
+                    <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full mr-1 animate-pulse"></span>
+                    Active
+                </span>
+            </div>
+            <div class="space-y-1 text-sm">
+                <p class="text-slate-600"><span class="text-slate-400">VM:</span> ${escapeHtml(session.vm_ip || 'N/A')}</p>
+                <p class="text-slate-600"><span class="text-slate-400">Started:</span> ${formatDateTime(session.created_at)}</p>
+                <p class="text-slate-600"><span class="text-slate-400">Expires:</span> ${formatDateTime(session.expires_at)}</p>
+            </div>
         </div>
     `).join('');
 }
 
 async function loadAssignments() {
-    // Try to load unique assignments from recordings
     const data = await apiCall('/api/recordings?limit=1000');
     if (!data || !data.recordings) return;
 
@@ -265,38 +288,34 @@ async function playRecording(recordingId) {
     const container = document.getElementById('player-container');
     const infoDiv = document.getElementById('recording-info');
 
-    // Show modal
-    modal.classList.add('active');
-    container.innerHTML = '<p style="color: white; text-align: center; padding: 2rem;">Loading recording...</p>';
+    modal.classList.remove('hidden');
+    container.innerHTML = '<p class="text-white text-center py-8">Loading recording...</p>';
 
-    // Get recording info
     const info = await apiCall(`/api/recordings/${recordingId}`);
     if (info) {
         document.getElementById('player-title').textContent =
             `Recording: ${info.user_name || 'Unknown'} - ${formatDateTime(info.started_at)}`;
         infoDiv.innerHTML = `
-            <p><strong>Student:</strong> ${escapeHtml(info.user_name || 'Unknown')}</p>
-            <p><strong>Email:</strong> ${escapeHtml(info.user_email || 'Unknown')}</p>
-            <p><strong>Course:</strong> ${escapeHtml(info.course_title || 'N/A')}</p>
-            <p><strong>Assignment:</strong> ${escapeHtml(info.assignment_title || 'N/A')}</p>
-            <p><strong>Duration:</strong> ${formatDuration(info.duration_seconds)}</p>
-            <p><strong>Size:</strong> ${formatFileSize(info.file_size_bytes)}</p>
+            <div class="grid grid-cols-2 gap-2 text-sm">
+                <p><span class="text-slate-400">Student:</span> ${escapeHtml(info.user_name || 'Unknown')}</p>
+                <p><span class="text-slate-400">Email:</span> ${escapeHtml(info.user_email || 'Unknown')}</p>
+                <p><span class="text-slate-400">Course:</span> ${escapeHtml(info.course_title || 'N/A')}</p>
+                <p><span class="text-slate-400">Assignment:</span> ${escapeHtml(info.assignment_title || 'N/A')}</p>
+                <p><span class="text-slate-400">Duration:</span> ${formatDuration(info.duration_seconds)}</p>
+                <p><span class="text-slate-400">Size:</span> ${formatFileSize(info.file_size_bytes)}</p>
+            </div>
         `;
     }
 
-    // Try to play with asciinema player
     try {
-        // Clear previous player
         if (currentPlayer) {
             currentPlayer.dispose();
             currentPlayer = null;
         }
         container.innerHTML = '';
 
-        // Fetch the cast file URL
         const castUrl = `${window.dashboardConfig?.apiBase || ''}/api/recordings/${recordingId}/cast`;
 
-        // Create player
         currentPlayer = AsciinemaPlayer.create(
             castUrl,
             container,
@@ -312,12 +331,13 @@ async function playRecording(recordingId) {
     } catch (error) {
         console.error('Player error:', error);
         container.innerHTML = `
-            <p style="color: white; text-align: center; padding: 2rem;">
-                Unable to play recording.
-                <button class="btn btn-secondary" onclick="viewText(${recordingId}); closePlayer();">
+            <div class="text-white text-center py-8">
+                <p class="mb-4">Unable to play recording.</p>
+                <button onclick="viewText(${recordingId}); closePlayer();"
+                        class="px-4 py-2 bg-slate-600 rounded-lg hover:bg-slate-500 transition">
                     View as text instead
                 </button>
-            </p>
+            </div>
         `;
     }
 }
@@ -330,7 +350,7 @@ function setPlaybackSpeed(speed) {
 
 function closePlayer() {
     const modal = document.getElementById('player-modal');
-    modal.classList.remove('active');
+    modal.classList.add('hidden');
     if (currentPlayer) {
         currentPlayer.dispose();
         currentPlayer = null;
@@ -344,17 +364,15 @@ async function viewText(recordingId) {
     const modal = document.getElementById('text-modal');
     const content = document.getElementById('text-content');
 
-    modal.classList.add('active');
+    modal.classList.remove('hidden');
     content.textContent = 'Loading...';
 
-    // Get recording info for title
     const info = await apiCall(`/api/recordings/${recordingId}`);
     if (info) {
         document.getElementById('text-title').textContent =
             `Transcript: ${info.user_name || 'Unknown'} - ${formatDateTime(info.started_at)}`;
     }
 
-    // Fetch text content
     try {
         const baseUrl = window.dashboardConfig?.apiBase || '';
         const response = await fetch(`${baseUrl}/api/recordings/${recordingId}/view`);
@@ -367,7 +385,7 @@ async function viewText(recordingId) {
 
 function closeTextView() {
     const modal = document.getElementById('text-modal');
-    modal.classList.remove('active');
+    modal.classList.add('hidden');
     currentRecordingId = null;
 }
 
@@ -388,13 +406,11 @@ async function downloadTranscript() {
 async function downloadRecording(recordingId) {
     const baseUrl = window.dashboardConfig?.apiBase || '';
 
-    // Download log file
     const logLink = document.createElement('a');
     logLink.href = `${baseUrl}/api/recordings/${recordingId}/download`;
     logLink.download = `session-${recordingId}.log`;
     logLink.click();
 
-    // Download timing file after a short delay
     setTimeout(() => {
         const timingLink = document.createElement('a');
         timingLink.href = `${baseUrl}/api/recordings/${recordingId}/timing`;
@@ -421,7 +437,7 @@ document.addEventListener('keydown', function(e) {
 
 // Close modals on outside click
 document.addEventListener('click', function(e) {
-    if (e.target.classList.contains('modal')) {
+    if (e.target.id === 'player-modal' || e.target.id === 'text-modal') {
         closePlayer();
         closeTextView();
     }
@@ -443,24 +459,23 @@ async function checkDemoVM() {
 }
 
 function showDemoVMInactive() {
-    document.getElementById('demo-vm-inactive').style.display = 'block';
-    document.getElementById('demo-vm-loading').style.display = 'none';
-    document.getElementById('demo-vm-active').style.display = 'none';
+    document.getElementById('demo-vm-inactive').classList.remove('hidden');
+    document.getElementById('demo-vm-loading').classList.add('hidden');
+    document.getElementById('demo-vm-active').classList.add('hidden');
 }
 
 function showDemoVMLoading() {
-    document.getElementById('demo-vm-inactive').style.display = 'none';
-    document.getElementById('demo-vm-loading').style.display = 'block';
-    document.getElementById('demo-vm-active').style.display = 'none';
+    document.getElementById('demo-vm-inactive').classList.add('hidden');
+    document.getElementById('demo-vm-loading').classList.remove('hidden');
+    document.getElementById('demo-vm-active').classList.add('hidden');
 }
 
 function showDemoVMActive(data) {
-    document.getElementById('demo-vm-inactive').style.display = 'none';
-    document.getElementById('demo-vm-loading').style.display = 'none';
-    document.getElementById('demo-vm-active').style.display = 'flex';
+    document.getElementById('demo-vm-inactive').classList.add('hidden');
+    document.getElementById('demo-vm-loading').classList.add('hidden');
+    document.getElementById('demo-vm-active').classList.remove('hidden');
 
     document.getElementById('demo-vm-ip').textContent = data.vm_ip || 'N/A';
-    document.getElementById('demo-vm-expires').textContent = data.expires_at ? formatDateTime(data.expires_at) : 'N/A';
     document.getElementById('demo-vm-link').href = data.url || '#';
 }
 
@@ -484,7 +499,6 @@ async function launchDemoVM() {
         demoVMSessionId = data.session_id;
         showDemoVMActive(data);
 
-        // Refresh stats
         loadStats();
         loadActiveSessions();
 
@@ -492,35 +506,6 @@ async function launchDemoVM() {
         console.error('Error launching demo VM:', error);
         alert('Failed to launch demo VM: ' + error.message);
         showDemoVMInactive();
-    }
-}
-
-async function extendDemoVM() {
-    if (!demoVMSessionId) {
-        alert('No active demo VM to extend');
-        return;
-    }
-
-    try {
-        const response = await fetch(`/api/demo-vm/extend`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        });
-
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || 'Failed to extend session');
-        }
-
-        const data = await response.json();
-        document.getElementById('demo-vm-expires').textContent = data.expires_at ? formatDateTime(data.expires_at) : 'N/A';
-        alert('Demo VM session extended by 1 hour');
-
-    } catch (error) {
-        console.error('Error extending demo VM:', error);
-        alert('Failed to extend session: ' + error.message);
     }
 }
 
@@ -547,11 +532,8 @@ async function destroyDemoVM() {
         demoVMSessionId = null;
         showDemoVMInactive();
 
-        // Refresh stats
         loadStats();
         loadActiveSessions();
-
-        alert('Demo VM destroyed successfully');
 
     } catch (error) {
         console.error('Error destroying demo VM:', error);
