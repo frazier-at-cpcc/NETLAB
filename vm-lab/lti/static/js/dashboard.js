@@ -1,4 +1,4 @@
-// Central Piedmont LabsConnect - Instructor Dashboard JavaScript
+// LabsConnect - Instructor Dashboard JavaScript
 
 let currentPage = 1;
 const pageSize = 20;

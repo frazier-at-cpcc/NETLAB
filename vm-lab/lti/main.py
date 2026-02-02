@@ -133,7 +133,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Red Hat Academy Lab - LTI Server",
+    title="LabsConnect - LTI Server",
     description="LTI 1.1 and 1.3 Tool Provider for VM Lab Environment",
     version="1.0.0",
     lifespan=lifespan
@@ -1450,8 +1450,8 @@ async def config_json():
     Use this URL when configuring the tool in your LMS.
     """
     return JSONResponse({
-        "title": "Red Hat Academy Lab Environment",
-        "description": "Launch on-demand RHEL virtual machines for hands-on labs",
+        "title": "LabsConnect",
+        "description": "Launch on-demand virtual lab environments for hands-on learning",
         "oidc_initiation_url": f"{LTI_BASE_URL}/lti/login",
         "target_link_uri": f"{LTI_BASE_URL}/lti/launch",
         "public_jwk_url": f"{LTI_BASE_URL}/lti/jwks",
@@ -1495,25 +1495,25 @@ async def config_xml():
         http://www.imsglobal.org/xsd/imslticm_v1p0 http://www.imsglobal.org/xsd/lti/ltiv1p0/imslticm_v1p0.xsd
         http://www.imsglobal.org/xsd/imslticp_v1p0 http://www.imsglobal.org/xsd/lti/ltiv1p0/imslticp_v1p0.xsd">
 
-    <blti:title>Red Hat Academy Lab Environment</blti:title>
-    <blti:description>Launch on-demand RHEL virtual machines for hands-on labs. Each student gets their own dedicated VM with 16GB RAM.</blti:description>
+    <blti:title>LabsConnect</blti:title>
+    <blti:description>Launch on-demand virtual lab environments for hands-on learning. Each student gets their own dedicated VM.</blti:description>
     <blti:launch_url>{LTI_BASE_URL}/lti/launch</blti:launch_url>
 
     <blti:extensions platform="canvas.instructure.com">
-        <lticm:property name="tool_id">rhel_lab</lticm:property>
+        <lticm:property name="tool_id">labsconnect</lticm:property>
         <lticm:property name="privacy_level">public</lticm:property>
         <lticm:property name="domain">{urllib.parse.urlparse(LTI_BASE_URL).netloc}</lticm:property>
         <lticm:options name="assignment_selection">
             <lticm:property name="enabled">true</lticm:property>
             <lticm:property name="message_type">basic-lti-launch-request</lticm:property>
             <lticm:property name="url">{LTI_BASE_URL}/lti/launch</lticm:property>
-            <lticm:property name="text">Red Hat Academy Lab</lticm:property>
+            <lticm:property name="text">LabsConnect</lticm:property>
         </lticm:options>
         <lticm:options name="link_selection">
             <lticm:property name="enabled">true</lticm:property>
             <lticm:property name="message_type">basic-lti-launch-request</lticm:property>
             <lticm:property name="url">{LTI_BASE_URL}/lti/launch</lticm:property>
-            <lticm:property name="text">Red Hat Academy Lab</lticm:property>
+            <lticm:property name="text">LabsConnect</lticm:property>
         </lticm:options>
     </blti:extensions>
 
@@ -1528,7 +1528,7 @@ async def config_xml():
     <blti:vendor>
         <lticp:code>cpcc</lticp:code>
         <lticp:name>Central Piedmont Community College</lticp:name>
-        <lticp:description>Red Hat Academy VM Lab Environment</lticp:description>
+        <lticp:description>LabsConnect Virtual Lab Environment</lticp:description>
         <lticp:url>https://www.cpcc.edu</lticp:url>
     </blti:vendor>
 
@@ -1569,7 +1569,7 @@ async def root():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Red Hat Academy Lab - LTI Server</title>
+        <title>LabsConnect - LTI Server</title>
         <style>
             body { font-family: system-ui, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
             h1 { color: #cc0000; }
@@ -1578,8 +1578,8 @@ async def root():
         </style>
     </head>
     <body>
-        <h1>Red Hat Academy Lab Environment</h1>
-        <p>LTI Tool Provider for on-demand RHEL virtual machines.</p>
+        <h1>LabsConnect</h1>
+        <p>LTI Tool Provider for on-demand virtual lab environments.</p>
 
         <h2>Supported LTI Versions</h2>
         <ul>

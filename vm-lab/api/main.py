@@ -247,8 +247,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Red Hat Academy Lab - VM Orchestration API (Proxmox)",
-    description="Manages VM lifecycle for student lab environments via Proxmox VE",
+    title="LabsConnect - VM Orchestration API",
+    description="Manages VM lifecycle for virtual lab environments via Proxmox VE",
     version="2.0.0",
     lifespan=lifespan
 )
