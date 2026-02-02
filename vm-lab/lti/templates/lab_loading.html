@@ -452,7 +452,7 @@
 
         async function pollStatus() {
             try {
-                const response = await fetch(config.statusUrl);
+                const response = await fetch(config.statusUrl, { credentials: 'include' });
                 if (response.status === 404) {
                     showState('stopped');
                     stopPolling();
@@ -481,7 +481,10 @@
         async function stopSession() {
             showLoading('Stopping lab...');
             try {
-                const response = await fetch(config.stopUrl, { method: 'DELETE' });
+                const response = await fetch(config.stopUrl, {
+                    method: 'DELETE',
+                    credentials: 'include'
+                });
                 if (response.ok) {
                     showState('stopped');
                     stopPolling();
@@ -500,7 +503,10 @@
         async function recreateSession() {
             showLoading('Recreating lab environment...');
             try {
-                const response = await fetch(config.recreateUrl, { method: 'POST' });
+                const response = await fetch(config.recreateUrl, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
                 if (response.ok) {
                     const data = await response.json();
                     config.sessionId = data.session_id;
