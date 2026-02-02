@@ -70,6 +70,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://lab:lab@localhost:5432/la
 # SSH configuration for ttyd
 SSH_PRIVATE_KEY_PATH = os.getenv("SSH_PRIVATE_KEY_PATH", "/app/keys/id_ed25519")
 SSH_USER = os.getenv("SSH_USER", "kiosk")
+SSH_PASSWORD = os.getenv("SSH_PASSWORD", "redhat")  # Default RHA password
 
 # Session recordings directory
 RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/var/lib/vm-lab/recordings")
@@ -598,12 +599,14 @@ def spawn_ttyd_container(
         os.makedirs(recording_dir, exist_ok=True)
 
         # Command that wraps SSH with script for recording
-        ssh_command = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /keys/id_ed25519 {SSH_USER}@{vm_ip}"
+        # Use sshpass for password authentication (RHA images use password auth by default)
+        ssh_command = f"sshpass -p '{SSH_PASSWORD}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip}"
         script_command = f"script -q -f -t/recordings/{os.path.relpath(timing_path, RECORDINGS_DIR)} /recordings/{os.path.relpath(recording_path, RECORDINGS_DIR)} -c '{ssh_command}'"
 
         # Spawn ttyd container with recording
+        # Use custom image with SSH client installed
         container = docker_client.containers.run(
-            "tsl0922/ttyd:latest",
+            "vm-lab-ttyd:latest",
             command=f"ttyd --writable --port 7681 /bin/sh -c \"{script_command}\"",
             name=container_name,
             detach=True,

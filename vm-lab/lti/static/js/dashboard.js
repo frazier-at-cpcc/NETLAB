@@ -166,7 +166,7 @@ async function loadRecordings() {
 
 async function loadActiveSessions() {
     const grid = document.getElementById('active-sessions-grid');
-    const data = await apiCall('/api/sessions?status=active');
+    const data = await apiCall('/api/sessions?status=running');
 
     if (!data || !data.sessions || data.sessions.length === 0) {
         grid.innerHTML = '<p class="no-data">No active sessions</p>';

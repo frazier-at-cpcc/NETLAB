@@ -149,6 +149,15 @@ services:
       timeout: 5s
       retries: 5
 
+  # Custom ttyd image with SSH client
+  ttyd:
+    build:
+      context: ./ttyd
+      dockerfile: Dockerfile
+    image: vm-lab-ttyd:latest
+    profiles:
+      - build-only  # Only used for building, not running
+
   # Cloudflare Tunnel - Exposes services without opening firewall
   cloudflared:
     image: cloudflare/cloudflared:latest
