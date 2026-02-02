@@ -500,13 +500,20 @@ def get_vm_ip(proxmox: ProxmoxAPI, vmid: int) -> Optional[str]:
                     if ip and not ip.startswith('127.') and not ip.startswith('169.254.'):
                         all_ips.append(ip)
 
+        logger.debug(f"VM {vmid} found IPs: {all_ips}, looking for prefix: {MGMT_NETWORK_PREFIX}")
+
         # Prefer management network IP if configured
         if MGMT_NETWORK_PREFIX:
             for ip in all_ips:
                 if ip.startswith(MGMT_NETWORK_PREFIX):
+                    logger.debug(f"VM {vmid} using management IP: {ip}")
                     return ip
+            # If we have IPs but none on management network, don't return yet - wait for DHCP
+            if all_ips:
+                logger.debug(f"VM {vmid} has IPs {all_ips} but none on management network {MGMT_NETWORK_PREFIX}, waiting...")
+                return None
 
-        # Fall back to first available IP
+        # Fall back to first available IP (only if no MGMT_NETWORK_PREFIX configured)
         if all_ips:
             return all_ips[0]
     except Exception as e:

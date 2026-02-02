@@ -1085,14 +1085,15 @@ async def provision_student_vm(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
-    session_key = body.get('session_key')
-    user_id = body.get('user_id')
-    user_email = body.get('user_email', '')
-    user_name = body.get('user_name', 'Student')
-    course_id = body.get('course_id', 'unknown')
-    course_title = body.get('course_title', 'Unknown Course')
-    assignment_id = body.get('assignment_id', 'default')
-    assignment_title = body.get('assignment_title', 'Lab Assignment')
+    # Get values from body, falling back to session values if empty
+    session_key = body.get('session_key') or request.session.get('session_key')
+    user_id = body.get('user_id') or request.session.get('user_id')
+    user_email = body.get('user_email') or request.session.get('user_email', '')
+    user_name = body.get('user_name') or request.session.get('user_name', 'Student')
+    course_id = body.get('course_id') or request.session.get('course_id', 'unknown')
+    course_title = body.get('course_title') or request.session.get('course_title', 'Unknown Course')
+    assignment_id = body.get('assignment_id') or request.session.get('assignment_id', 'default')
+    assignment_title = body.get('assignment_title') or request.session.get('assignment_title', 'Lab Assignment')
 
     if not session_key or not user_id:
         raise HTTPException(status_code=400, detail="Missing required fields: session_key and user_id")
