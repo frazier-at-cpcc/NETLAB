@@ -1083,6 +1083,9 @@ async def stop_student_session(request: Request, session_id: str):
             response = await client.delete(f"{ORCHESTRATOR_API}/api/{session_id}")
             if response.status_code == 404:
                 raise HTTPException(status_code=404, detail="Session not found")
+            if response.status_code != 200:
+                logger.error(f"Failed to stop session {session_id}: {response.status_code} - {response.text}")
+                raise HTTPException(status_code=response.status_code, detail="Failed to stop session")
             logger.info(f"Session {session_id} stopped successfully")
             return JSONResponse(content={"status": "stopped"}, status_code=200)
         except httpx.RequestError as e:

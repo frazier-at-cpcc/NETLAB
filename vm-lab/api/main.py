@@ -357,12 +357,17 @@ async def finalize_recording(db: asyncpg.Pool, session_id: str):
     if not recording:
         return
 
-    ended_at = datetime.utcnow()
+    from datetime import timezone
+    ended_at = datetime.now(timezone.utc)
     duration_seconds = None
     file_size_bytes = None
 
     if recording['started_at']:
-        duration_seconds = int((ended_at - recording['started_at']).total_seconds())
+        # Ensure both datetimes are timezone-aware for comparison
+        started = recording['started_at']
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        duration_seconds = int((ended_at - started).total_seconds())
 
     if recording['recording_path'] and os.path.exists(recording['recording_path']):
         file_size_bytes = os.path.getsize(recording['recording_path'])
@@ -608,26 +613,67 @@ def spawn_ttyd_container(
 
         # Command that wraps SSH with script for recording
         # Use sshpass for password authentication (RHA images use password auth by default)
+        # Passwords are passed via environment variables to avoid shell quoting issues
+        recording_rel_path = os.path.relpath(recording_path, RECORDINGS_DIR)
+        timing_rel_path = os.path.relpath(timing_path, RECORDINGS_DIR)
+
         if NESTED_SSH_ENABLED:
             # Chain SSH: first connect to outer VM, then auto-connect to nested workstation
-            # The -t flag allocates a pseudo-terminal for the nested SSH
-            inner_ssh = f"sshpass -p {NESTED_SSH_PASSWORD} ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {NESTED_SSH_USER}@{NESTED_SSH_HOST}"
-            ssh_command = f"sshpass -p '{SSH_PASSWORD}' ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip} \"{inner_ssh}\""
+            # Use SSHPASS env var (-e flag) to avoid quoting issues with passwords
+            # Inner SSH command includes a retry loop since nested VMs take time to boot
+            # The script waits for workstation to be reachable before connecting
+            wait_and_connect_script = f'''
+echo "Waiting for {NESTED_SSH_HOST} to become available..."
+for i in $(seq 1 60); do
+    if ping -c 1 -W 2 {NESTED_SSH_HOST} >/dev/null 2>&1; then
+        if nc -z -w 2 {NESTED_SSH_HOST} 22 2>/dev/null; then
+            echo "{NESTED_SSH_HOST} is ready. Connecting..."
+            sleep 1
+            SSHPASS=$INNER_PASS sshpass -e ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {NESTED_SSH_USER}@{NESTED_SSH_HOST}
+            exit $?
+        fi
+    fi
+    echo -ne "\\rWaiting for {NESTED_SSH_HOST}... ($i/60)  "
+    sleep 3
+done
+echo ""
+echo "{NESTED_SSH_HOST} did not become available after 3 minutes."
+echo "You can try manually: ssh {NESTED_SSH_USER}@{NESTED_SSH_HOST}"
+exec bash
+'''
+            # Escape for shell
+            escaped_script = wait_and_connect_script.replace("'", "'\\''")
+            ssh_command = f"sshpass -e ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip} bash -c '{escaped_script}'"
             logger.info(f"Nested SSH enabled: connecting to {NESTED_SSH_USER}@{NESTED_SSH_HOST} via {SSH_USER}@{vm_ip}")
+            env_vars = {
+                "SSHPASS": SSH_PASSWORD,
+                "INNER_PASS": NESTED_SSH_PASSWORD,
+            }
         else:
             # Direct SSH to the VM only
-            ssh_command = f"sshpass -p '{SSH_PASSWORD}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip}"
+            ssh_command = f"sshpass -e ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip}"
+            env_vars = {
+                "SSHPASS": SSH_PASSWORD,
+            }
 
-        script_command = f"script -q -f -t/recordings/{os.path.relpath(timing_path, RECORDINGS_DIR)} /recordings/{os.path.relpath(recording_path, RECORDINGS_DIR)} -c '{ssh_command}'"
+        # Build the ttyd command with script recording wrapper
+        ttyd_command = [
+            "ttyd", "--writable", "--port", "7681",
+            "script", "-q", "-f",
+            f"-t/recordings/{timing_rel_path}",
+            f"/recordings/{recording_rel_path}",
+            "-c", ssh_command
+        ]
 
         # Spawn ttyd container with recording
         # Use custom image with SSH client installed
         container = docker_client.containers.run(
             "vm-lab-ttyd:latest",
-            command=f"ttyd --writable --port 7681 /bin/sh -c \"{script_command}\"",
+            command=ttyd_command,
             name=container_name,
             detach=True,
             network=DOCKER_NETWORK,
+            environment=env_vars,
             volumes={
                 os.path.dirname(SSH_PRIVATE_KEY_PATH): {
                     'bind': '/keys',
