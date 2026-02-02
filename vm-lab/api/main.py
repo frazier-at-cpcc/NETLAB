@@ -710,6 +710,27 @@ async def get_session_by_key(session_key: str):
     return Session(**dict(row))
 
 
+@app.get("/api/session/{session_id}", response_model=Session)
+async def get_session_by_id(session_id: str):
+    """Get session details by session ID."""
+    db = await get_db()
+
+    row = await db.fetchrow(
+        """
+        SELECT session_id, url, vm_ip, status, user_name, course_title,
+               assignment_title, created_at, expires_at
+        FROM vm_sessions
+        WHERE session_id = $1
+        """,
+        session_id
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return Session(**dict(row))
+
+
 @app.post("/api/provision", response_model=Session)
 async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTasks):
     """Provision a new VM for a student."""
@@ -1159,6 +1180,99 @@ async def view_recording(recording_id: int):
         raise HTTPException(status_code=500, detail=f"Failed to read recording: {e}")
 
 
+@app.get("/api/recordings/{recording_id}/cast")
+async def get_recording_cast(recording_id: int):
+    """
+    Convert recording to asciicast v2 format for asciinema-player.
+    This reads the typescript log and timing file and converts to JSON.
+    """
+    db = await get_db()
+
+    row = await db.fetchrow(
+        """
+        SELECT recording_path, timing_path, user_name, started_at
+        FROM session_recordings WHERE id = $1
+        """,
+        recording_id
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    recording_path = row['recording_path']
+    timing_path = row['timing_path']
+
+    if not recording_path or not os.path.exists(recording_path):
+        raise HTTPException(status_code=404, detail="Recording file not found")
+
+    if not timing_path or not os.path.exists(timing_path):
+        raise HTTPException(status_code=404, detail="Timing file not found")
+
+    try:
+        # Read recording content
+        with open(recording_path, 'rb') as f:
+            content = f.read()
+
+        # Read timing data
+        with open(timing_path, 'r') as f:
+            timing_lines = f.readlines()
+
+        # Build asciicast v2 format
+        # Header
+        started_at = row['started_at'].timestamp() if row['started_at'] else time.time()
+        cast_header = {
+            "version": 2,
+            "width": 120,
+            "height": 30,
+            "timestamp": int(started_at),
+            "title": f"Session Recording - {row['user_name'] or 'Student'}",
+            "env": {"SHELL": "/bin/bash", "TERM": "xterm-256color"}
+        }
+
+        # Parse timing and build events
+        events = []
+        content_pos = 0
+        current_time = 0.0
+
+        for line in timing_lines:
+            parts = line.strip().split(' ')
+            if len(parts) >= 2:
+                try:
+                    delay = float(parts[0])
+                    byte_count = int(parts[1])
+                except ValueError:
+                    continue
+
+                current_time += delay
+
+                # Extract the chunk of output
+                chunk = content[content_pos:content_pos + byte_count]
+                content_pos += byte_count
+
+                if chunk:
+                    # Try to decode as UTF-8, replacing errors
+                    try:
+                        text = chunk.decode('utf-8', errors='replace')
+                    except Exception:
+                        text = chunk.decode('latin-1', errors='replace')
+
+                    events.append([round(current_time, 6), "o", text])
+
+        # Build output as newline-delimited JSON (asciicast v2 format)
+        output_lines = [json.dumps(cast_header)]
+        for event in events:
+            output_lines.append(json.dumps(event))
+
+        return PlainTextResponse(
+            content='\n'.join(output_lines),
+            media_type="application/x-asciicast"
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to generate asciicast: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate playback format: {e}")
+
+
 @app.get("/api/recordings/by-session/{session_id}")
 async def get_recording_by_session(session_id: str):
     """Get recording for a specific session."""
@@ -1216,6 +1330,14 @@ async def get_stats():
         "SELECT COUNT(*) FROM ip_allocations WHERE session_id IS NULL OR released_at IS NOT NULL"
     )
 
+    # Get unique students count from recordings
+    unique_students = await db.fetchval(
+        "SELECT COUNT(DISTINCT user_email) FROM session_recordings WHERE user_email IS NOT NULL"
+    )
+
+    # Get total sessions count
+    total_sessions = await db.fetchval("SELECT COUNT(*) FROM vm_sessions")
+
     return {
         "running_vms": stats['running'],
         "starting_vms": stats['starting'],
@@ -1228,7 +1350,11 @@ async def get_stats():
         "vm_vcpus": VM_VCPUS,
         "total_recordings": recording_stats['total_recordings'],
         "completed_recordings": recording_stats['completed_recordings'],
-        "total_recording_size_mb": round(recording_stats['total_recording_bytes'] / (1024 * 1024), 2)
+        "total_recording_size_mb": round(recording_stats['total_recording_bytes'] / (1024 * 1024), 2),
+        # Additional fields for instructor dashboard
+        "total_sessions": total_sessions,
+        "active_sessions": stats['running'],
+        "unique_students": unique_students or 0
     }
 
 

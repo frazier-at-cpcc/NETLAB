@@ -19,6 +19,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Form, Depends
 from fastapi.responses import RedirectResponse, JSONResponse, Response, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 import httpx
 import asyncpg
@@ -101,6 +103,40 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Static files and templates
+app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
+templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
+
+# Instructor role patterns (LTI standard roles)
+INSTRUCTOR_ROLES = [
+    "Instructor",
+    "urn:lti:role:ims/lis/Instructor",
+    "http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor",
+    "http://purl.imsglobal.org/vocab/lis/v2/institution/person#Instructor",
+    "Administrator",
+    "urn:lti:role:ims/lis/Administrator",
+    "http://purl.imsglobal.org/vocab/lis/v2/membership#Administrator",
+    "http://purl.imsglobal.org/vocab/lis/v2/institution/person#Administrator",
+    "ContentDeveloper",
+    "urn:lti:role:ims/lis/ContentDeveloper",
+    "http://purl.imsglobal.org/vocab/lis/v2/membership#ContentDeveloper",
+    "TeachingAssistant",
+    "urn:lti:role:ims/lis/TeachingAssistant",
+    "http://purl.imsglobal.org/vocab/lis/v2/membership#Mentor",
+]
+
+
+def is_instructor(roles: str) -> bool:
+    """Check if the user has an instructor role."""
+    if not roles:
+        return False
+    role_list = [r.strip() for r in roles.replace(',', ' ').split()]
+    for role in role_list:
+        for instructor_role in INSTRUCTOR_ROLES:
+            if instructor_role.lower() in role.lower():
+                return True
+    return False
 
 
 # ============================================================================
@@ -338,8 +374,9 @@ async def handle_lti11_launch(
         user_agent=request.headers.get('user-agent')
     )
 
-    # Provision or redirect to existing VM
+    # Provision or redirect to existing VM (or show instructor dashboard)
     return await provision_or_redirect(
+        request=request,
         session_key=session_key,
         user_id=user_id,
         user_email=user_email,
@@ -347,7 +384,8 @@ async def handle_lti11_launch(
         course_id=course_id,
         course_title=course_title,
         assignment_id=resource_link_id,
-        assignment_title=resource_link_title
+        assignment_title=resource_link_title,
+        roles=roles
     )
 
 
@@ -610,6 +648,7 @@ async def handle_lti13_launch(
     request.session.pop('lti_iss', None)
 
     return await provision_or_redirect(
+        request=request,
         session_key=session_key,
         user_id=user_id,
         user_email=user_email,
@@ -617,7 +656,8 @@ async def handle_lti13_launch(
         course_id=course_id,
         course_title=course_title,
         assignment_id=assignment_id,
-        assignment_title=assignment_title
+        assignment_title=assignment_title,
+        roles=roles
     )
 
 
@@ -626,6 +666,7 @@ async def handle_lti13_launch(
 # ============================================================================
 
 async def provision_or_redirect(
+    request: Request,
     session_key: str,
     user_id: str,
     user_email: str,
@@ -633,12 +674,40 @@ async def provision_or_redirect(
     course_id: str,
     course_title: str,
     assignment_id: str,
-    assignment_title: str
-) -> RedirectResponse:
+    assignment_title: str,
+    roles: str = ""
+) -> Response:
     """
     Check for existing VM session or provision a new one.
     Returns redirect to the VM terminal URL.
+    For instructors, returns the instructor dashboard instead.
     """
+    # Check if user is an instructor
+    if is_instructor(roles):
+        logger.info(f"Instructor detected: {user_name} ({user_email})")
+        # Store instructor info in session for dashboard access
+        request.session['instructor'] = True
+        request.session['user_id'] = user_id
+        request.session['user_email'] = user_email
+        request.session['user_name'] = user_name
+        request.session['course_id'] = course_id
+        request.session['course_title'] = course_title
+        request.session['roles'] = roles
+
+        # Render instructor dashboard
+        return templates.TemplateResponse(
+            "instructor_dashboard.html",
+            {
+                "request": request,
+                "user_id": user_id,
+                "user_email": user_email,
+                "user_name": user_name,
+                "course_id": course_id,
+                "course_title": course_title,
+                "api_base": ORCHESTRATOR_API.replace("http://lab-api:8000", "")  # Use relative URLs
+            }
+        )
+
     async with httpx.AsyncClient(timeout=120.0) as client:
         # Check if user already has an active session
         encoded_key = urllib.parse.quote(session_key, safe='')
@@ -724,6 +793,318 @@ async def launch(request: Request):
             status_code=400,
             detail="Invalid LTI launch request. Missing required parameters."
         )
+
+
+# ============================================================================
+# Instructor Dashboard
+# ============================================================================
+
+@app.get("/lti/dashboard")
+async def instructor_dashboard(request: Request):
+    """
+    Instructor dashboard page. Requires valid instructor session.
+    """
+    # Check if user has instructor session
+    if not request.session.get('instructor'):
+        return HTMLResponse(
+            content="<h1>Access Denied</h1><p>You must launch this tool from your LMS as an instructor.</p>",
+            status_code=403
+        )
+
+    return templates.TemplateResponse(
+        "instructor_dashboard.html",
+        {
+            "request": request,
+            "user_id": request.session.get('user_id', ''),
+            "user_email": request.session.get('user_email', ''),
+            "user_name": request.session.get('user_name', 'Instructor'),
+            "course_id": request.session.get('course_id', ''),
+            "course_title": request.session.get('course_title', 'Course'),
+            "api_base": ""  # Use relative URLs through proxy
+        }
+    )
+
+
+# ============================================================================
+# API Proxy for Instructor Dashboard
+# ============================================================================
+
+@app.get("/api/recordings")
+async def proxy_recordings(request: Request):
+    """Proxy recordings API for instructor dashboard."""
+    if not request.session.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        params = dict(request.query_params)
+        response = await client.get(f"{ORCHESTRATOR_API}/api/recordings", params=params)
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@app.get("/api/recordings/{recording_id}")
+async def proxy_recording_detail(request: Request, recording_id: int):
+    """Proxy single recording detail."""
+    if not request.session.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(f"{ORCHESTRATOR_API}/api/recordings/{recording_id}")
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@app.get("/api/recordings/{recording_id}/view")
+async def proxy_recording_view(request: Request, recording_id: int):
+    """Proxy recording view (plain text)."""
+    if not request.session.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(f"{ORCHESTRATOR_API}/api/recordings/{recording_id}/view")
+        return Response(content=response.text, media_type="text/plain")
+
+
+@app.get("/api/recordings/{recording_id}/download")
+async def proxy_recording_download(request: Request, recording_id: int):
+    """Proxy recording download."""
+    if not request.session.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.get(f"{ORCHESTRATOR_API}/api/recordings/{recording_id}/download")
+        return Response(
+            content=response.content,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f"attachment; filename=session-{recording_id}.log"}
+        )
+
+
+@app.get("/api/recordings/{recording_id}/timing")
+async def proxy_recording_timing(request: Request, recording_id: int):
+    """Proxy recording timing file download."""
+    if not request.session.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.get(f"{ORCHESTRATOR_API}/api/recordings/{recording_id}/timing")
+        return Response(
+            content=response.content,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f"attachment; filename=session-{recording_id}.timing"}
+        )
+
+
+@app.get("/api/recordings/{recording_id}/cast")
+async def proxy_recording_cast(request: Request, recording_id: int):
+    """Proxy recording in asciicast format for asciinema player."""
+    if not request.session.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.get(f"{ORCHESTRATOR_API}/api/recordings/{recording_id}/cast")
+        return Response(content=response.content, media_type="application/json")
+
+
+@app.get("/api/sessions")
+async def proxy_sessions(request: Request):
+    """Proxy sessions list for instructor dashboard."""
+    if not request.session.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        params = dict(request.query_params)
+        response = await client.get(f"{ORCHESTRATOR_API}/api/sessions", params=params)
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@app.get("/api/stats")
+async def proxy_stats(request: Request):
+    """Proxy stats for instructor dashboard."""
+    if not request.session.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(f"{ORCHESTRATOR_API}/api/stats")
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+# ============================================================================
+# Demo VM Endpoints for Instructor
+# ============================================================================
+
+@app.get("/api/demo-vm")
+async def get_demo_vm(request: Request):
+    """Get the instructor's current demo VM status."""
+    if not request.session.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    demo_session_id = request.session.get('demo_vm_session_id')
+    if not demo_session_id:
+        return JSONResponse(content={"status": "inactive"})
+
+    # Check if the session is still valid
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.get(f"{ORCHESTRATOR_API}/api/session/{demo_session_id}")
+            if response.status_code == 200:
+                session_data = response.json()
+                if session_data.get('status') in ['running', 'starting']:
+                    return JSONResponse(content={
+                        "status": "active",
+                        "session_id": demo_session_id,
+                        "url": session_data.get('url'),
+                        "vm_ip": session_data.get('vm_ip'),
+                        "expires_at": session_data.get('expires_at'),
+                        "created_at": session_data.get('created_at')
+                    })
+        except Exception as e:
+            logger.error(f"Error checking demo VM status: {e}")
+
+    # Session no longer valid, clear from session
+    request.session.pop('demo_vm_session_id', None)
+    return JSONResponse(content={"status": "inactive"})
+
+
+@app.post("/api/demo-vm")
+async def launch_demo_vm(request: Request):
+    """Launch a demo VM for the instructor."""
+    if not request.session.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    # Check if instructor already has an active demo VM
+    existing_session_id = request.session.get('demo_vm_session_id')
+    if existing_session_id:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.get(f"{ORCHESTRATOR_API}/api/session/{existing_session_id}")
+                if response.status_code == 200:
+                    session_data = response.json()
+                    if session_data.get('status') in ['running', 'starting']:
+                        return JSONResponse(content={
+                            "status": "active",
+                            "session_id": existing_session_id,
+                            "url": session_data.get('url'),
+                            "vm_ip": session_data.get('vm_ip'),
+                            "expires_at": session_data.get('expires_at'),
+                            "created_at": session_data.get('created_at')
+                        })
+            except Exception:
+                pass
+
+    # Provision a new demo VM
+    user_id = request.session.get('user_id', 'instructor')
+    user_email = request.session.get('user_email', 'instructor@local')
+    user_name = request.session.get('user_name', 'Instructor')
+    course_id = request.session.get('course_id', 'demo')
+    course_title = request.session.get('course_title', 'Demo')
+
+    # Create a unique session key for the demo VM
+    demo_session_key = f"demo:{user_id}:{course_id}:{secrets.token_hex(4)}"
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        try:
+            provision_response = await client.post(
+                f"{ORCHESTRATOR_API}/api/provision",
+                json={
+                    "session_key": demo_session_key,
+                    "user_id": user_id,
+                    "user_email": user_email,
+                    "user_name": f"{user_name} (Demo)",
+                    "course_id": course_id,
+                    "course_title": course_title,
+                    "assignment_id": "instructor-demo",
+                    "assignment_title": "Instructor Demo VM",
+                    "session_hours": 2  # Demo VMs get 2 hours by default
+                }
+            )
+
+            if provision_response.status_code != 200:
+                error_detail = provision_response.text
+                logger.error(f"Demo VM provisioning failed: {error_detail}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Failed to provision demo VM. Please try again."
+                )
+
+            session_data = provision_response.json()
+            demo_session_id = session_data.get('session_id')
+
+            # Store the demo VM session ID in the instructor's session
+            request.session['demo_vm_session_id'] = demo_session_id
+
+            logger.info(f"Provisioned demo VM for {user_name}: {session_data.get('url')}")
+
+            return JSONResponse(content={
+                "status": "active",
+                "session_id": demo_session_id,
+                "url": session_data.get('url'),
+                "vm_ip": session_data.get('vm_ip'),
+                "expires_at": session_data.get('expires_at'),
+                "created_at": session_data.get('created_at')
+            })
+
+        except httpx.RequestError as e:
+            logger.error(f"Error provisioning demo VM: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="Lab service temporarily unavailable. Please try again."
+            )
+
+
+@app.post("/api/demo-vm/extend")
+async def extend_demo_vm(request: Request):
+    """Extend the instructor's demo VM session by 1 hour."""
+    if not request.session.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    demo_session_id = request.session.get('demo_vm_session_id')
+    if not demo_session_id:
+        raise HTTPException(status_code=404, detail="No active demo VM found")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.post(f"{ORCHESTRATOR_API}/api/{demo_session_id}/extend")
+
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail="Failed to extend session")
+
+            session_data = response.json()
+            return JSONResponse(content={
+                "status": "extended",
+                "expires_at": session_data.get('expires_at')
+            })
+
+        except httpx.RequestError as e:
+            logger.error(f"Error extending demo VM: {e}")
+            raise HTTPException(status_code=503, detail="Failed to extend session")
+
+
+@app.delete("/api/demo-vm")
+async def destroy_demo_vm(request: Request):
+    """Destroy the instructor's demo VM."""
+    if not request.session.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    demo_session_id = request.session.get('demo_vm_session_id')
+    if not demo_session_id:
+        raise HTTPException(status_code=404, detail="No active demo VM found")
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.delete(f"{ORCHESTRATOR_API}/api/{demo_session_id}")
+
+            # Clear the demo VM from session regardless of result
+            request.session.pop('demo_vm_session_id', None)
+
+            if response.status_code not in [200, 404]:
+                logger.warning(f"Demo VM destruction returned status {response.status_code}")
+
+            return JSONResponse(content={"status": "destroyed"})
+
+        except httpx.RequestError as e:
+            logger.error(f"Error destroying demo VM: {e}")
+            # Clear from session anyway
+            request.session.pop('demo_vm_session_id', None)
+            raise HTTPException(status_code=503, detail="Failed to destroy demo VM")
 
 
 # ============================================================================

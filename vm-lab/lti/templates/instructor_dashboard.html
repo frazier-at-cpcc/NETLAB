@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instructor Dashboard - VM Lab</title>
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player@3.6.3/dist/bundle/asciinema-player.css">
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <h1>VM Lab - Instructor Dashboard</h1>
+            <div class="user-info">
+                <span id="instructor-name"></span>
+                <span class="course-badge" id="course-name"></span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <div class="container">
+            <!-- Demo VM Section -->
+            <section class="demo-section">
+                <h2>Demo VM</h2>
+                <div class="demo-content">
+                    <div id="demo-vm-inactive" class="demo-inactive">
+                        <p>Launch a demonstration VM for live presentations and walkthroughs.</p>
+                        <button class="btn btn-primary btn-lg" onclick="launchDemoVM()">
+                            Launch Demo VM
+                        </button>
+                    </div>
+                    <div id="demo-vm-loading" class="demo-loading" style="display: none;">
+                        <div class="spinner"></div>
+                        <p>Provisioning your demo VM...</p>
+                        <p class="demo-note">This may take up to 60 seconds.</p>
+                    </div>
+                    <div id="demo-vm-active" class="demo-active" style="display: none;">
+                        <div class="demo-info">
+                            <div class="demo-status">
+                                <span class="status-indicator active"></span>
+                                <strong>Demo VM Active</strong>
+                            </div>
+                            <p>VM IP: <code id="demo-vm-ip">-</code></p>
+                            <p>Expires: <span id="demo-vm-expires">-</span></p>
+                        </div>
+                        <div class="demo-actions">
+                            <a id="demo-vm-link" href="#" target="_blank" class="btn btn-primary btn-lg">
+                                Open Terminal
+                            </a>
+                            <button class="btn btn-secondary" onclick="extendDemoVM()">
+                                Extend Time (+1hr)
+                            </button>
+                            <button class="btn btn-danger" onclick="destroyDemoVM()">
+                                Destroy VM
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Stats Overview -->
+            <section class="stats-section">
+                <h2>Overview</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value" id="total-sessions">-</div>
+                        <div class="stat-label">Total Sessions</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="active-sessions">-</div>
+                        <div class="stat-label">Active Now</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="total-recordings">-</div>
+                        <div class="stat-label">Recordings</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="unique-students">-</div>
+                        <div class="stat-label">Unique Students</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Filters -->
+            <section class="filters-section">
+                <h2>Filter Recordings</h2>
+                <div class="filters-grid">
+                    <div class="filter-group">
+                        <label for="filter-student">Student</label>
+                        <input type="text" id="filter-student" placeholder="Name or email...">
+                    </div>
+                    <div class="filter-group">
+                        <label for="filter-date-from">From Date</label>
+                        <input type="date" id="filter-date-from">
+                    </div>
+                    <div class="filter-group">
+                        <label for="filter-date-to">To Date</label>
+                        <input type="date" id="filter-date-to">
+                    </div>
+                    <div class="filter-group">
+                        <label for="filter-assignment">Assignment</label>
+                        <select id="filter-assignment">
+                            <option value="">All Assignments</option>
+                        </select>
+                    </div>
+                    <div class="filter-actions">
+                        <button class="btn btn-primary" onclick="applyFilters()">Search</button>
+                        <button class="btn btn-secondary" onclick="clearFilters()">Clear</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Recordings Table -->
+            <section class="recordings-section">
+                <h2>Session Recordings</h2>
+                <div class="table-container">
+                    <table id="recordings-table">
+                        <thead>
+                            <tr>
+                                <th>Student</th>
+                                <th>Email</th>
+                                <th>Assignment</th>
+                                <th>Date/Time</th>
+                                <th>Duration</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recordings-body">
+                            <tr>
+                                <td colspan="7" class="loading">Loading recordings...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="pagination">
+                    <button class="btn btn-secondary" id="prev-page" onclick="prevPage()" disabled>Previous</button>
+                    <span id="page-info">Page 1</span>
+                    <button class="btn btn-secondary" id="next-page" onclick="nextPage()">Next</button>
+                </div>
+            </section>
+
+            <!-- Active Sessions -->
+            <section class="active-section">
+                <h2>Active Sessions</h2>
+                <div class="active-grid" id="active-sessions-grid">
+                    <p class="no-data">No active sessions</p>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <!-- Recording Player Modal -->
+    <div id="player-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="player-title">Recording Playback</h3>
+                <button class="close-btn" onclick="closePlayer()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="player-container"></div>
+                <div class="player-controls">
+                    <button class="btn btn-secondary" onclick="setPlaybackSpeed(0.5)">0.5x</button>
+                    <button class="btn btn-secondary" onclick="setPlaybackSpeed(1)">1x</button>
+                    <button class="btn btn-secondary" onclick="setPlaybackSpeed(2)">2x</button>
+                    <button class="btn btn-secondary" onclick="setPlaybackSpeed(4)">4x</button>
+                </div>
+                <div class="recording-info" id="recording-info"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Text View Modal -->
+    <div id="text-modal" class="modal">
+        <div class="modal-content modal-wide">
+            <div class="modal-header">
+                <h3 id="text-title">Session Transcript</h3>
+                <button class="close-btn" onclick="closeTextView()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <pre id="text-content" class="text-content"></pre>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="downloadTranscript()">Download</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/asciinema-player@3.6.3/dist/bundle/asciinema-player.min.js"></script>
+    <script src="/static/js/dashboard.js"></script>
+    <script>
+        // Initialize with data from server
+        window.dashboardConfig = {
+            courseId: "{{ course_id }}",
+            courseName: "{{ course_title }}",
+            instructorName: "{{ user_name }}",
+            apiBase: "{{ api_base }}"
+        };
+    </script>
+</body>
+</html>

@@ -5,22 +5,41 @@ On-demand RHEL virtual machine provisioning with web-based terminal access for s
 ## Features
 
 - **On-demand VM provisioning** - Students get dedicated 16GB RAM RHEL VMs
-- **Web terminal access** - SSH via browser, no VPN required
+- **Web terminal access** - SSH via browser using ttyd, no VPN required
 - **LTI integration** - Works with Canvas, Blackboard, Moodle, Brightspace
 - **Dual LTI support** - Both LTI 1.1 (OAuth) and LTI 1.3 (OIDC/JWT)
 - **Session persistence** - Students return to the same VM within a course
 - **Session recording** - All terminal sessions recorded for review/audit
+- **Instructor dashboard** - Review recordings, monitor active sessions, launch demo VMs
 - **Firewall traversal** - Cloudflare Tunnel exposes services securely
 - **Auto-cleanup** - VMs automatically destroyed after session expiry
 
 ## Architecture
 
 ```
-Student → LMS → LTI Server → Orchestration API → libvirt/KVM → RHEL VM
-                    ↓                                              ↓
-              Cloudflare Tunnel                              ttyd container
-                    ↓                                              ↓
-              Web Terminal  ←─────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Student Flow                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Student ──► LMS ──► LTI Server ──► Orchestration API ──► libvirt/KVM      │
+│                          │                                     │            │
+│                          │                                     ▼            │
+│                    Cloudflare Tunnel                       RHEL VM          │
+│                          │                                     │            │
+│                          ▼                                     ▼            │
+│                    Web Terminal ◄─────────────────────── ttyd container     │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                            Instructor Flow                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Instructor ──► LMS ──► LTI Server ──► Instructor Dashboard                 │
+│                                              │                              │
+│                                              ├──► View Recordings           │
+│                                              ├──► Monitor Sessions          │
+│                                              └──► Launch Demo VM            │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Prerequisites
@@ -115,35 +134,52 @@ make test
 
 See [LMS Configuration](#lms-configuration) below.
 
+---
+
 ## Directory Structure
 
 ```
 vm-lab/
 ├── docker-compose.yml      # Service definitions
 ├── .env                    # Configuration (create from .env.example)
-├── Makefile               # Common commands
-├── api/                   # VM Orchestration API
-│   ├── main.py
+├── .env.example            # Configuration template
+├── Makefile                # Common commands
+├── init-db.sql             # Database schema
+│
+├── api/                    # VM Orchestration API
+│   ├── main.py             # FastAPI application
 │   ├── Dockerfile
 │   └── requirements.txt
-├── lti/                   # LTI Server
-│   ├── main.py
+│
+├── lti/                    # LTI Server
+│   ├── main.py             # FastAPI application with LTI handling
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── lti13_config.json  # LTI 1.3 platform configs
-│   └── keys/              # Generated keys
-│       ├── private.pem    # LTI 1.3 signing key
-│       ├── public.pem     # LTI 1.3 verification key
-│       ├── id_ed25519     # SSH private key
-│       └── id_ed25519.pub # SSH public key (add to VMs)
+│   ├── lti13_config.json   # LTI 1.3 platform configs
+│   ├── keys/               # Generated keys (created by setup)
+│   │   ├── private.pem     # LTI 1.3 signing key
+│   │   ├── public.pem      # LTI 1.3 verification key
+│   │   ├── id_ed25519      # SSH private key
+│   │   └── id_ed25519.pub  # SSH public key (add to VMs)
+│   ├── templates/          # Jinja2 HTML templates
+│   │   └── instructor_dashboard.html
+│   └── static/             # Static assets
+│       ├── css/
+│       │   └── dashboard.css
+│       └── js/
+│           └── dashboard.js
+│
 ├── scripts/
-│   ├── generate-keys.sh
-│   ├── setup-libvirt-network.sh
-│   └── prepare-base-image.sh
-├── cloudflared/
-│   └── config.yml
-└── init-db.sql            # Database schema
+│   ├── generate-keys.sh           # Key generation script
+│   ├── setup-libvirt-network.sh   # Network setup script
+│   ├── prepare-base-image.sh      # VM image preparation
+│   └── manage-recordings.sh       # Recording management CLI
+│
+└── cloudflared/
+    └── config.yml          # Cloudflare Tunnel config
 ```
+
+---
 
 ## LMS Configuration
 
@@ -182,13 +218,71 @@ vm-lab/
    - Consumer key: `cpcc-moodle`
    - Shared secret: (from your `.env` file)
 
+### Brightspace (LTI 1.1)
+
+1. **Admin Tools → External Learning Tools → Manage Tool Providers**
+2. Add new provider:
+   - Launch Point URL: `https://lti.yourdomain.com/lti/launch`
+   - Key: `cpcc-brightspace`
+   - Secret: (from your `.env` file)
+
+---
+
+## Instructor Dashboard
+
+When instructors launch the LTI tool from their LMS, they are automatically redirected to the instructor dashboard instead of provisioning a VM.
+
+### Features
+
+| Feature | Description |
+|---------|-------------|
+| **Demo VM** | Launch a demonstration VM for live presentations |
+| **Statistics** | View total sessions, active VMs, recording counts |
+| **Recording List** | Browse and filter all student session recordings |
+| **Recording Playback** | Watch recordings with variable speed (0.5x-4x) |
+| **Text View** | View recording content as plain text |
+| **Download** | Export recording and timing files |
+| **Active Sessions** | Monitor currently running student VMs |
+
+### Instructor Role Detection
+
+The system automatically detects instructor roles from LTI launch data:
+
+**LTI 1.1 Roles:**
+- `Instructor`
+- `Administrator`
+- `ContentDeveloper`
+- `TeachingAssistant`
+
+**LTI 1.3 Roles (IMS URIs):**
+- `http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor`
+- `http://purl.imsglobal.org/vocab/lis/v2/membership#Administrator`
+- `http://purl.imsglobal.org/vocab/lis/v2/membership#ContentDeveloper`
+- `http://purl.imsglobal.org/vocab/lis/v2/membership#Mentor`
+
+### Demo VM for Live Presentations
+
+Instructors can launch a demonstration VM directly from the dashboard:
+
+| Action | Description |
+|--------|-------------|
+| **Launch Demo VM** | Provisions a dedicated VM (2-hour default session) |
+| **Open Terminal** | Opens the web terminal in a new browser tab |
+| **Extend Time** | Add 1 hour to the current session |
+| **Destroy VM** | Immediately terminate the demo VM |
+
+Demo VMs are labeled with "(Demo)" in the user name and use "Instructor Demo VM" as the assignment title for easy identification.
+
+---
+
 ## Session Recordings
 
-All terminal sessions are automatically recorded using the Linux `script` command with timing information. This allows instructors to review what students did during their lab sessions.
+All terminal sessions are automatically recorded using the Linux `script` command with timing information.
 
 ### Recording Storage
 
 Recordings are stored in `/var/lib/vm-lab/recordings/` organized by date:
+
 ```
 /var/lib/vm-lab/recordings/
 ├── 2024/
@@ -197,6 +291,12 @@ Recordings are stored in `/var/lib/vm-lab/recordings/` organized by date:
 │   │   │   ├── jsmith_John_Smith_abc123_143052.log
 │   │   │   ├── jsmith_John_Smith_abc123_143052.timing
 │   │   │   └── ...
+│   │   └── 16/
+│   │       └── ...
+│   └── 02/
+│       └── ...
+└── 2025/
+    └── ...
 ```
 
 ### Recording API Endpoints
@@ -208,6 +308,7 @@ Recordings are stored in `/var/lib/vm-lab/recordings/` organized by date:
 | `GET /api/recordings/{id}/download` | Download recording file |
 | `GET /api/recordings/{id}/timing` | Download timing file |
 | `GET /api/recordings/{id}/view` | View recording as text |
+| `GET /api/recordings/{id}/cast` | Get recording in asciicast format |
 | `GET /api/recordings/by-session/{session_id}` | Get recording for session |
 
 ### Filtering Recordings
@@ -227,11 +328,14 @@ curl "http://localhost:8000/api/recordings?course_id=RHEL101"
 
 # Filter by date range
 curl "http://localhost:8000/api/recordings?date_from=2024-01-01&date_to=2024-01-31"
+
+# Pagination
+curl "http://localhost:8000/api/recordings?limit=50&offset=100"
 ```
 
 ### Replaying Recordings
 
-Recordings can be replayed using `scriptreplay`:
+**Using scriptreplay (command line):**
 
 ```bash
 # Download recording and timing files
@@ -245,56 +349,118 @@ scriptreplay session.timing session.log
 scriptreplay -d 2 session.timing session.log
 ```
 
+**Using the Instructor Dashboard:**
+1. Navigate to the recordings table
+2. Click "Play" on any recording
+3. Use playback controls (0.5x, 1x, 2x, 4x)
+
+### Recording Management CLI
+
+The `scripts/manage-recordings.sh` script provides command-line utilities:
+
+```bash
+# List recent recordings
+./scripts/manage-recordings.sh list
+
+# Filter by student
+./scripts/manage-recordings.sh list --email jsmith@example.com
+
+# View statistics
+./scripts/manage-recordings.sh stats
+
+# Show disk usage by month
+./scripts/manage-recordings.sh disk-usage
+
+# Replay a recording
+./scripts/manage-recordings.sh replay 42
+
+# Export recording files
+./scripts/manage-recordings.sh export 42 /tmp/export/
+
+# Clean up old recordings (dry run)
+./scripts/manage-recordings.sh cleanup --days 90 --dry-run
+
+# Clean up old recordings (actual deletion)
+./scripts/manage-recordings.sh cleanup --days 90
+```
+
+Or use Make targets:
+
+```bash
+make recordings          # List recent recordings
+make recordings-stats    # Show statistics
+make recordings-cleanup  # Dry run cleanup (90 days)
+make recordings-disk     # Show disk usage
+```
+
 ---
 
-## API Endpoints
+## API Reference
 
-### LTI Server (`https://lti.yourdomain.com`)
+### LTI Server Endpoints
 
-| Endpoint | Description |
-|----------|-------------|
-| `POST /lti/launch` | Main launch (auto-detects LTI version) |
-| `GET /lti/login` | LTI 1.3 OIDC initiation |
-| `GET /lti/jwks` | LTI 1.3 public keys |
-| `GET /lti/config` | LTI 1.3 JSON configuration |
-| `GET /lti/config.xml` | LTI 1.1 XML configuration |
-| `GET /lti/health` | Health check |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/lti/launch` | POST | Main LTI launch (auto-detects version) |
+| `/lti/login` | GET/POST | LTI 1.3 OIDC initiation |
+| `/lti/jwks` | GET | LTI 1.3 public keys (JWKS) |
+| `/lti/config` | GET | LTI 1.3 JSON configuration |
+| `/lti/config.xml` | GET | LTI 1.1 XML configuration |
+| `/lti/dashboard` | GET | Instructor dashboard (requires session) |
+| `/lti/health` | GET | Health check |
 
-### Orchestration API (`http://lab-api:8000` internal)
+### Orchestration API Endpoints
 
-| Endpoint | Description |
-|----------|-------------|
-| `POST /api/provision` | Create new VM session |
-| `GET /api/session/by-key/{key}` | Find existing session |
-| `DELETE /api/{session_id}` | Destroy session |
-| `GET /api/sessions` | List all sessions |
-| `POST /api/{session_id}/extend` | Extend session time |
-| `GET /api/stats` | System statistics |
-| `GET /health` | Health check |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/provision` | POST | Create new VM session |
+| `/api/session/{id}` | GET | Get session by ID |
+| `/api/session/by-key/{key}` | GET | Find session by composite key |
+| `/api/sessions` | GET | List all sessions |
+| `/api/{session_id}` | DELETE | Destroy session |
+| `/api/{session_id}/extend` | POST | Extend session time (+1 hour) |
+| `/api/stats` | GET | System statistics |
+| `/api/recordings` | GET | List recordings |
+| `/api/recordings/{id}` | GET | Get recording details |
+| `/api/recordings/{id}/download` | GET | Download recording file |
+| `/api/recordings/{id}/timing` | GET | Download timing file |
+| `/api/recordings/{id}/view` | GET | View as plain text |
+| `/api/recordings/{id}/cast` | GET | Get asciicast format |
+| `/health` | GET | Health check |
+
+---
 
 ## Operations
 
-### View Logs
+### Common Commands
 
 ```bash
-make logs           # All services
-make logs-lti       # LTI server only
-make logs-api       # API server only
-```
+# Build and start
+make build              # Build Docker images
+make up                 # Start all services
+make down               # Stop all services
+make restart            # Restart all services
 
-### Check Status
+# Monitoring
+make status             # Container and VM status
+make stats              # VM and recording statistics
+make logs               # View all logs (follow mode)
+make logs-lti           # LTI server logs only
+make logs-api           # API server logs only
+make test               # Run health checks
 
-```bash
-make status         # Container and VM status
-make stats          # VM statistics
-make test           # Health checks
-```
+# Database
+make db-shell           # PostgreSQL shell
+make db-backup          # Create database backup
 
-### Database Access
+# Development
+make dev-up             # Start in foreground (for debugging)
+make shell-lti          # Shell into LTI container
+make shell-api          # Shell into API container
 
-```bash
-make db-shell       # PostgreSQL shell
-make db-backup      # Create backup
+# Cleanup
+make clean              # Remove stopped containers
+make clean-all          # Remove everything including volumes
 ```
 
 ### Manual Session Management
@@ -306,9 +472,38 @@ virsh list
 # List ttyd containers
 docker ps --filter "name=ttyd-"
 
+# Get session details
+curl http://localhost:8000/api/session/SESSION_ID
+
+# Extend a session
+curl -X POST http://localhost:8000/api/SESSION_ID/extend
+
 # Destroy specific session
 curl -X DELETE http://localhost:8000/api/SESSION_ID
 ```
+
+---
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DOMAIN` | Base domain for services | `lab.yourdomain.com` |
+| `LTI_BASE_URL` | Public URL for LTI server | `https://lti.yourdomain.com` |
+| `CF_TUNNEL_TOKEN` | Cloudflare Tunnel token | (required) |
+| `BASE_QCOW` | Path to base QCOW2 image | `/var/lib/libvirt/images/rhel-academy-base.qcow2` |
+| `VM_RAM_MB` | RAM per VM in MB | `16384` |
+| `VM_VCPUS` | vCPUs per VM | `4` |
+| `POSTGRES_PASSWORD` | PostgreSQL admin password | (required) |
+| `LTI_DB_PASS` | LTI database password | (required) |
+| `LAB_DB_PASS` | Lab API database password | (required) |
+| `SESSION_SECRET` | Session cookie secret | (auto-generated) |
+| `LTI11_CANVAS_SECRET` | Canvas LTI 1.1 secret | (optional) |
+| `LTI11_BLACKBOARD_SECRET` | Blackboard LTI 1.1 secret | (optional) |
+| `LTI11_MOODLE_SECRET` | Moodle LTI 1.1 secret | (optional) |
+| `LTI11_BRIGHTSPACE_SECRET` | Brightspace LTI 1.1 secret | (optional) |
+
+---
 
 ## Troubleshooting
 
@@ -323,6 +518,9 @@ virsh dumpxml student-SESSION_ID
 
 # Check base image exists
 ls -la /var/lib/libvirt/images/
+
+# Verify libvirt connection from container
+docker exec -it lab-api virsh list --all
 ```
 
 ### SSH connection fails
@@ -333,6 +531,9 @@ docker exec -it lab-api ssh -i /app/keys/id_ed25519 student@VM_IP
 
 # Check if SSH key is in VM
 # (VM should have key in /home/student/.ssh/authorized_keys)
+
+# Verify key permissions
+ls -la lti/keys/
 ```
 
 ### LTI launch fails
@@ -346,6 +547,9 @@ curl https://lti.yourdomain.com/lti/health
 
 # Verify consumer key is configured
 grep LTI11 .env
+
+# Check JWKS endpoint (LTI 1.3)
+curl https://lti.yourdomain.com/lti/jwks
 ```
 
 ### Cloudflare Tunnel issues
@@ -356,16 +560,51 @@ docker logs cloudflared -f
 
 # Test local connectivity
 curl -H "Host: lti.yourdomain.com" http://localhost:80/lti/health
+
+# Verify tunnel token
+echo $CF_TUNNEL_TOKEN
 ```
+
+### Recording playback issues
+
+```bash
+# Check if recordings directory is mounted
+docker exec lab-api ls -la /var/lib/vm-lab/recordings/
+
+# Verify recording exists
+curl http://localhost:8000/api/recordings/123
+
+# Check recording file
+docker exec lab-api cat /var/lib/vm-lab/recordings/2024/01/15/session.log | head
+```
+
+### Database connection issues
+
+```bash
+# Check PostgreSQL is running
+docker logs postgres
+
+# Test database connection
+docker exec -it postgres psql -U postgres -c "SELECT 1"
+
+# Check database tables exist
+docker exec -it postgres psql -U postgres -d lab -c "\dt"
+```
+
+---
 
 ## Security Considerations
 
 - **LTI 1.1 secrets** are shared between LMS and tool - keep them secure
 - **LTI 1.3** uses public/private keys - more secure, preferred for new setups
 - **Session URLs** use random 8-char IDs (2.8 trillion combinations)
-- **VMs are isolated** on a private network bridge
+- **VMs are isolated** on a private network bridge (10.10.10.0/24)
 - **Sessions auto-expire** after 4 hours (configurable)
 - **HTTPS enforced** via Cloudflare Tunnel
+- **Session recordings** contain all terminal input/output - handle with care
+- **Instructor dashboard** requires valid LTI session with instructor role
+
+---
 
 ## License
 

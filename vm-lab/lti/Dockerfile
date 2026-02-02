@@ -15,6 +15,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 COPY lti13_config.json* ./
 
+# Copy templates and static files for instructor dashboard
+COPY templates/ ./templates/
+COPY static/ ./static/
+
 # Create directories for keys and config
 RUN mkdir -p /app/keys
 
