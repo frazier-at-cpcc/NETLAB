@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Lab Session - {{ session_id }} | LabsConnect</title>
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='10' fill='%23e94560'/%3E%3Ctext x='50' y='70' font-size='60' text-anchor='middle' fill='white'%3ELC%3C/text%3E%3C/svg%3E">
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #1a1a2e;
+            color: #e0e0e0;
+            overflow: hidden;
+            height: 100vh;
+        }
+
+        /* Header */
+        .session-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            height: 48px;
+            background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%);
+            border-bottom: 1px solid #0f3460;
+        }
+
+        .session-header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            color: #e0e0e0;
+        }
+
+        .brand-icon {
+            width: 28px;
+            height: 28px;
+            background: #e94560;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 12px;
+            color: white;
+        }
+
+        .brand-text {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .session-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            font-size: 13px;
+            color: #888;
+        }
+
+        .session-info-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .session-info-value {
+            color: #e0e0e0;
+        }
+
+        /* Tabs */
+        .session-tabs {
+            display: flex;
+            background-color: #0f0f1a;
+            border-bottom: 1px solid #0f3460;
+        }
+
+        .session-tab {
+            flex: 1;
+            max-width: 200px;
+            padding: 12px 24px;
+            font-size: 14px;
+            font-weight: 500;
+            color: #888;
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .session-tab:hover {
+            color: #e0e0e0;
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+
+        .session-tab.active {
+            color: #e94560;
+            border-bottom-color: #e94560;
+        }
+
+        .session-tab svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        .session-tab .tab-badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            background: #0f3460;
+            border-radius: 10px;
+            color: #888;
+        }
+
+        .session-tab.active .tab-badge {
+            background: rgba(233, 69, 96, 0.2);
+            color: #e94560;
+        }
+
+        /* Tab content */
+        .tab-content {
+            display: none;
+            height: calc(100vh - 96px); /* Header (48px) + Tabs (48px) */
+            background-color: #000;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .tab-content iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
+        /* Console tab needs special handling */
+        #console-tab {
+            background-color: #1a1a2e;
+        }
+
+        #console-frame {
+            background-color: #000;
+        }
+
+        /* Loading state for tabs */
+        .tab-loading {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #888;
+        }
+
+        .tab-loading .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #333;
+            border-top-color: #e94560;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 16px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Session actions in header */
+        .session-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .session-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 6px 12px;
+            font-size: 12px;
+            font-weight: 500;
+            color: #e0e0e0;
+            background-color: #0f3460;
+            border: 1px solid #1a4a7a;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-decoration: none;
+        }
+
+        .session-btn:hover {
+            background-color: #1a4a7a;
+            border-color: #2a5a8a;
+        }
+
+        .session-btn svg {
+            width: 14px;
+            height: 14px;
+            margin-right: 4px;
+        }
+
+        .session-btn.danger {
+            background-color: rgba(220, 53, 69, 0.2);
+            border-color: rgba(220, 53, 69, 0.3);
+            color: #dc3545;
+        }
+
+        .session-btn.danger:hover {
+            background-color: rgba(220, 53, 69, 0.3);
+        }
+
+        /* Protocol indicator */
+        .protocol-indicator {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .protocol-indicator.vnc {
+            background: rgba(0, 123, 255, 0.2);
+            color: #4dabff;
+        }
+
+        .protocol-indicator.spice {
+            background: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+        }
+
+        /* Mobile responsive */
+        @media (max-width: 768px) {
+            .session-header {
+                padding: 0 8px;
+            }
+
+            .session-info {
+                display: none;
+            }
+
+            .session-tab {
+                padding: 12px 16px;
+            }
+
+            .session-tab span {
+                display: none;
+            }
+
+            .session-btn span {
+                display: none;
+            }
+
+            .session-btn svg {
+                margin-right: 0;
+            }
+        }
+
+        /* Fullscreen mode */
+        :fullscreen .session-header,
+        :-webkit-full-screen .session-header {
+            display: none;
+        }
+
+        :fullscreen .session-tabs,
+        :-webkit-full-screen .session-tabs {
+            display: none;
+        }
+
+        :fullscreen .tab-content,
+        :-webkit-full-screen .tab-content {
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header class="session-header">
+        <div class="session-header-left">
+            <a href="#" class="brand">
+                <div class="brand-icon">LC</div>
+                <span class="brand-text">LabsConnect</span>
+            </a>
+
+            <div class="session-info">
+                <div class="session-info-item">
+                    <span>Session:</span>
+                    <span class="session-info-value">{{ session_id }}</span>
+                </div>
+                {% if vm_ip %}
+                <div class="session-info-item">
+                    <span>VM:</span>
+                    <span class="session-info-value">{{ vm_ip }}</span>
+                </div>
+                {% endif %}
+                {% if user_name %}
+                <div class="session-info-item">
+                    <span class="session-info-value">{{ user_name }}</span>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="session-actions">
+            <button id="btn-fullscreen" class="session-btn" title="Toggle fullscreen (F11)">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+                </svg>
+                <span>Fullscreen</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Tabs -->
+    <nav class="session-tabs">
+        <button id="tab-terminal" class="session-tab active" data-tab="terminal">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="4 17 10 11 4 5"/>
+                <line x1="12" y1="19" x2="20" y2="19"/>
+            </svg>
+            <span>Terminal</span>
+            <span class="tab-badge">SSH</span>
+        </button>
+
+        {% if console_enabled %}
+        <button id="tab-console" class="session-tab" data-tab="console">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                <line x1="8" y1="21" x2="16" y2="21"/>
+                <line x1="12" y1="17" x2="12" y2="21"/>
+            </svg>
+            <span>Console</span>
+            <span class="tab-badge protocol-indicator {{ default_protocol }}">{{ default_protocol|upper }}</span>
+        </button>
+        {% endif %}
+    </nav>
+
+    <!-- Tab Content -->
+    <div id="terminal-tab" class="tab-content active">
+        <iframe id="terminal-frame" src="{{ terminal_url }}" title="Terminal"></iframe>
+    </div>
+
+    {% if console_enabled %}
+    <div id="console-tab" class="tab-content">
+        <!-- Console will be loaded when tab is clicked -->
+        <div id="console-loading" class="tab-loading">
+            <div class="spinner"></div>
+            <p>Click to load console...</p>
+        </div>
+        <iframe id="console-frame" style="display: none;" title="Console"></iframe>
+    </div>
+    {% endif %}
+
+    <script>
+        // Session configuration
+        const SESSION_CONFIG = {
+            sessionId: "{{ session_id }}",
+            terminalUrl: "{{ terminal_url }}",
+            consoleUrl: "/lti/session/{{ session_id }}/console?protocol={{ default_protocol }}",
+            consoleEnabled: {{ 'true' if console_enabled else 'false' }},
+            defaultProtocol: "{{ default_protocol or 'vnc' }}"
+        };
+
+        // Tab switching
+        const tabs = document.querySelectorAll('.session-tab');
+        const tabContents = document.querySelectorAll('.tab-content');
+        let consoleLoaded = false;
+
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                const targetTab = tab.dataset.tab;
+
+                // Update tab active state
+                tabs.forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+
+                // Update content visibility
+                tabContents.forEach(content => {
+                    content.classList.remove('active');
+                    if (content.id === `${targetTab}-tab`) {
+                        content.classList.add('active');
+                    }
+                });
+
+                // Lazy load console when tab is clicked
+                if (targetTab === 'console' && !consoleLoaded && SESSION_CONFIG.consoleEnabled) {
+                    loadConsole();
+                }
+
+                // Save tab preference
+                localStorage.setItem('labsconnect_preferred_tab', targetTab);
+            });
+        });
+
+        function loadConsole() {
+            const consoleFrame = document.getElementById('console-frame');
+            const consoleLoading = document.getElementById('console-loading');
+
+            if (consoleFrame && consoleLoading) {
+                consoleFrame.src = SESSION_CONFIG.consoleUrl;
+                consoleFrame.onload = () => {
+                    consoleLoading.style.display = 'none';
+                    consoleFrame.style.display = 'block';
+                    consoleLoaded = true;
+                };
+            }
+        }
+
+        // Fullscreen toggle
+        document.getElementById('btn-fullscreen').addEventListener('click', () => {
+            if (document.fullscreenElement) {
+                document.exitFullscreen();
+            } else {
+                document.documentElement.requestFullscreen();
+            }
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'F11') {
+                e.preventDefault();
+                document.getElementById('btn-fullscreen').click();
+            }
+        });
+
+        // Restore preferred tab on load
+        const preferredTab = localStorage.getItem('labsconnect_preferred_tab');
+        if (preferredTab && SESSION_CONFIG.consoleEnabled) {
+            const tabButton = document.querySelector(`[data-tab="${preferredTab}"]`);
+            if (tabButton) {
+                tabButton.click();
+            }
+        }
+
+        // Check URL for tab parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        const tabParam = urlParams.get('tab');
+        if (tabParam) {
+            const tabButton = document.querySelector(`[data-tab="${tabParam}"]`);
+            if (tabButton) {
+                tabButton.click();
+            }
+        }
+    </script>
+</body>
+</html>

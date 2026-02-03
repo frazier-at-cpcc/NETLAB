@@ -22,13 +22,15 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 import asyncpg
 import docker
 from proxmoxer import ProxmoxAPI
+import websockets
+import ssl
 
 # Configure logging
 logging.basicConfig(
@@ -90,6 +92,19 @@ DOCKER_NETWORK = "vm-lab_lab-network"
 
 # Traefik dynamic config directory for session routes
 TRAEFIK_DYNAMIC_DIR = os.getenv("TRAEFIK_DYNAMIC_DIR", "/app/traefik-dynamic")
+
+# Console access configuration (VNC/SPICE)
+CONSOLE_ENABLED = os.getenv("CONSOLE_ENABLED", "true").lower() == "true"
+CONSOLE_DEFAULT_PROTOCOL = os.getenv("CONSOLE_DEFAULT_PROTOCOL", "vnc")  # "vnc" or "spice"
+VNC_ENABLED = os.getenv("VNC_ENABLED", "true").lower() == "true"
+SPICE_ENABLED = os.getenv("SPICE_ENABLED", "true").lower() == "true"
+CONSOLE_TICKET_RATE_LIMIT = int(os.getenv("CONSOLE_TICKET_RATE_LIMIT", "10"))  # per minute per session
+CONSOLE_MAX_CONNECTIONS = int(os.getenv("CONSOLE_MAX_CONNECTIONS", "2"))  # max concurrent per session
+
+# In-memory rate limiter for console ticket requests
+# Structure: {session_id: [(timestamp1, timestamp2, ...)]}
+console_ticket_requests: Dict[str, list] = {}
+console_ticket_requests_lock = asyncio.Lock()
 
 
 # ============================================================================
@@ -163,6 +178,121 @@ class SessionStatus(BaseModel):
     steps: List[ProvisioningStep]
     progress_percent: int
     estimated_seconds_remaining: Optional[int] = None
+
+
+class VNCTicketResponse(BaseModel):
+    """Response containing VNC connection information."""
+    session_id: str
+    ticket: str
+    port: int
+    websocket_url: str
+    proxmox_host: str
+    vm_id: int
+    expires_in_seconds: int = 30
+
+
+class SPICETicketResponse(BaseModel):
+    """Response containing SPICE connection information."""
+    session_id: str
+    ticket: str
+    password: str
+    host: str
+    tls_port: Optional[int] = None
+    port: Optional[int] = None
+    websocket_url: str
+    proxy: Optional[str] = None
+    vm_id: int
+    expires_in_seconds: int = 30
+
+
+class ConsoleCapabilities(BaseModel):
+    """Console capabilities for a session."""
+    vnc_enabled: bool
+    spice_enabled: bool
+    default_protocol: str
+    protocols_available: List[str]
+
+
+# ============================================================================
+# Console Security Helpers
+# ============================================================================
+
+async def check_console_rate_limit(session_id: str) -> bool:
+    """
+    Check if a session has exceeded the console ticket rate limit.
+    Returns True if the request is allowed, False if rate limited.
+    """
+    now = time.time()
+    window_start = now - 60  # 1 minute window
+
+    async with console_ticket_requests_lock:
+        if session_id not in console_ticket_requests:
+            console_ticket_requests[session_id] = []
+
+        # Remove old entries outside the window
+        console_ticket_requests[session_id] = [
+            ts for ts in console_ticket_requests[session_id]
+            if ts > window_start
+        ]
+
+        # Check if under the limit
+        if len(console_ticket_requests[session_id]) >= CONSOLE_TICKET_RATE_LIMIT:
+            return False
+
+        # Record this request
+        console_ticket_requests[session_id].append(now)
+        return True
+
+
+async def log_console_connection(
+    db,
+    session_id: str,
+    protocol: str,
+    client_ip: Optional[str] = None,
+    user_agent: Optional[str] = None
+) -> Optional[int]:
+    """Log a console connection to the database for auditing."""
+    try:
+        result = await db.fetchval(
+            """
+            INSERT INTO console_connections (session_id, protocol, client_ip, user_agent)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id
+            """,
+            session_id, protocol, client_ip, user_agent
+        )
+
+        # Update last connected timestamp on session
+        await db.execute(
+            """
+            UPDATE vm_sessions
+            SET console_last_connected_at = CURRENT_TIMESTAMP
+            WHERE session_id = $1
+            """,
+            session_id
+        )
+
+        return result
+    except Exception as e:
+        # Don't fail the connection if logging fails
+        logger.warning(f"Failed to log console connection: {e}")
+        return None
+
+
+async def update_console_disconnection(db, connection_id: int):
+    """Update console connection record when disconnected."""
+    try:
+        await db.execute(
+            """
+            UPDATE console_connections
+            SET disconnected_at = CURRENT_TIMESTAMP,
+                duration_seconds = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - connected_at))::INTEGER
+            WHERE id = $1
+            """,
+            connection_id
+        )
+    except Exception as e:
+        logger.warning(f"Failed to update console disconnection: {e}")
 
 
 # ============================================================================
@@ -856,7 +986,13 @@ async def health():
         "docker": "connected" if docker_healthy else "disconnected",
         "proxmox_host": PROXMOX_HOST,
         "proxmox_node": PROXMOX_NODE,
-        "recordings_dir": RECORDINGS_DIR
+        "recordings_dir": RECORDINGS_DIR,
+        "console": {
+            "enabled": CONSOLE_ENABLED,
+            "vnc_enabled": VNC_ENABLED,
+            "spice_enabled": SPICE_ENABLED,
+            "default_protocol": CONSOLE_DEFAULT_PROTOCOL
+        }
     }
 
 
@@ -1367,6 +1503,426 @@ async def extend_session(session_id: str, hours: int = 2):
     await log_event(db, session_id, 'extended', {'hours': hours})
 
     return {"status": "extended", "hours": hours}
+
+
+# ============================================================================
+# API Endpoints - Console Access (VNC/SPICE)
+# ============================================================================
+
+@app.get("/api/session/{session_id}/console", response_model=ConsoleCapabilities)
+async def get_console_capabilities(session_id: str):
+    """Get console capabilities for a session."""
+    if not CONSOLE_ENABLED:
+        raise HTTPException(status_code=403, detail="Console access is disabled")
+
+    db = await get_db()
+    row = await db.fetchrow(
+        "SELECT status, vm_id FROM vm_sessions WHERE session_id = $1",
+        session_id
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    protocols = []
+    if VNC_ENABLED:
+        protocols.append("vnc")
+    if SPICE_ENABLED:
+        protocols.append("spice")
+
+    return ConsoleCapabilities(
+        vnc_enabled=VNC_ENABLED,
+        spice_enabled=SPICE_ENABLED,
+        default_protocol=CONSOLE_DEFAULT_PROTOCOL,
+        protocols_available=protocols
+    )
+
+
+@app.post("/api/session/{session_id}/vnc-ticket", response_model=VNCTicketResponse)
+async def get_vnc_ticket(session_id: str):
+    """
+    Get a VNC ticket for connecting to the VM's console.
+
+    The ticket is valid for ~30 seconds and should be used immediately
+    to establish a WebSocket connection.
+
+    Rate limited to prevent ticket exhaustion attacks.
+    """
+    if not CONSOLE_ENABLED or not VNC_ENABLED:
+        raise HTTPException(status_code=403, detail="VNC console access is disabled")
+
+    if not proxmox_api:
+        raise HTTPException(status_code=503, detail="Proxmox not available")
+
+    # Check rate limit
+    if not await check_console_rate_limit(session_id):
+        logger.warning(f"Rate limit exceeded for VNC ticket request: session {session_id}")
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Maximum {CONSOLE_TICKET_RATE_LIMIT} requests per minute."
+        )
+
+    db = await get_db()
+    row = await db.fetchrow(
+        "SELECT status, vm_id, vm_ip FROM vm_sessions WHERE session_id = $1",
+        session_id
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if row['status'] != 'running':
+        raise HTTPException(status_code=400, detail=f"Session is not running (status: {row['status']})")
+
+    vm_id = row['vm_id']
+    if not vm_id:
+        raise HTTPException(status_code=400, detail="No VM associated with this session")
+
+    try:
+        # Request VNC ticket from Proxmox with WebSocket support
+        result = proxmox_api.nodes(PROXMOX_NODE).qemu(vm_id).vncproxy.post(websocket=1)
+
+        ticket = result.get('ticket', '')
+        port = int(result.get('port', 5900))
+
+        # Build the WebSocket URL for our proxy
+        # Clients will connect to our proxy, which forwards to Proxmox
+        websocket_url = f"wss://{DOMAIN}/api/vnc/{session_id}/ws"
+
+        logger.info(f"Generated VNC ticket for session {session_id}, VM {vm_id}")
+
+        return VNCTicketResponse(
+            session_id=session_id,
+            ticket=ticket,
+            port=port,
+            websocket_url=websocket_url,
+            proxmox_host=PROXMOX_HOST,
+            vm_id=vm_id,
+            expires_in_seconds=30
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get VNC ticket for VM {vm_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get VNC ticket: {e}")
+
+
+@app.post("/api/session/{session_id}/spice-ticket", response_model=SPICETicketResponse)
+async def get_spice_ticket(session_id: str):
+    """
+    Get a SPICE ticket for connecting to the VM's console.
+
+    SPICE provides better performance for Windows VMs and supports
+    audio, USB redirection, and better clipboard integration.
+
+    Rate limited to prevent ticket exhaustion attacks.
+    """
+    if not CONSOLE_ENABLED or not SPICE_ENABLED:
+        raise HTTPException(status_code=403, detail="SPICE console access is disabled")
+
+    if not proxmox_api:
+        raise HTTPException(status_code=503, detail="Proxmox not available")
+
+    # Check rate limit
+    if not await check_console_rate_limit(session_id):
+        logger.warning(f"Rate limit exceeded for SPICE ticket request: session {session_id}")
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Maximum {CONSOLE_TICKET_RATE_LIMIT} requests per minute."
+        )
+
+    db = await get_db()
+    row = await db.fetchrow(
+        "SELECT status, vm_id, vm_ip FROM vm_sessions WHERE session_id = $1",
+        session_id
+    )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if row['status'] != 'running':
+        raise HTTPException(status_code=400, detail=f"Session is not running (status: {row['status']})")
+
+    vm_id = row['vm_id']
+    if not vm_id:
+        raise HTTPException(status_code=400, detail="No VM associated with this session")
+
+    try:
+        # Request SPICE ticket from Proxmox
+        result = proxmox_api.nodes(PROXMOX_NODE).qemu(vm_id).spiceproxy.post()
+
+        ticket = result.get('ticket', '')
+        password = result.get('password', '')
+        host = result.get('host', PROXMOX_HOST)
+        tls_port = result.get('tls-port')
+        port = result.get('port')
+        proxy = result.get('proxy')
+
+        # Build the WebSocket URL for our proxy
+        websocket_url = f"wss://{DOMAIN}/api/spice/{session_id}/ws"
+
+        logger.info(f"Generated SPICE ticket for session {session_id}, VM {vm_id}")
+
+        return SPICETicketResponse(
+            session_id=session_id,
+            ticket=ticket,
+            password=password,
+            host=host,
+            tls_port=int(tls_port) if tls_port else None,
+            port=int(port) if port else None,
+            websocket_url=websocket_url,
+            proxy=proxy,
+            vm_id=vm_id,
+            expires_in_seconds=30
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get SPICE ticket for VM {vm_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get SPICE ticket: {e}")
+
+
+@app.websocket("/api/vnc/{session_id}/ws")
+async def vnc_websocket_proxy(websocket: WebSocket, session_id: str):
+    """
+    WebSocket proxy for VNC connections.
+
+    This endpoint proxies WebSocket traffic between the browser's noVNC client
+    and the Proxmox VNC WebSocket endpoint.
+    """
+    if not CONSOLE_ENABLED or not VNC_ENABLED:
+        await websocket.close(code=4003, reason="VNC console access is disabled")
+        return
+
+    if not proxmox_api:
+        await websocket.close(code=4503, reason="Proxmox not available")
+        return
+
+    db = await get_db()
+    row = await db.fetchrow(
+        "SELECT status, vm_id FROM vm_sessions WHERE session_id = $1",
+        session_id
+    )
+
+    if not row:
+        await websocket.close(code=4404, reason="Session not found")
+        return
+
+    if row['status'] != 'running':
+        await websocket.close(code=4400, reason="Session is not running")
+        return
+
+    vm_id = row['vm_id']
+    if not vm_id:
+        await websocket.close(code=4400, reason="No VM associated with this session")
+        return
+
+    # Accept the WebSocket connection from the client
+    await websocket.accept()
+    logger.info(f"VNC WebSocket connection accepted for session {session_id}")
+
+    # Log the console connection for auditing
+    connection_id = await log_console_connection(
+        db, session_id, 'vnc',
+        client_ip=websocket.client.host if websocket.client else None,
+        user_agent=None  # WebSocket doesn't have user-agent header easily accessible
+    )
+
+    try:
+        # Get a fresh VNC ticket for the proxied connection
+        result = proxmox_api.nodes(PROXMOX_NODE).qemu(vm_id).vncproxy.post(websocket=1)
+        ticket = result.get('ticket', '')
+        port = result.get('port', 5900)
+
+        # Build Proxmox VNC WebSocket URL
+        # Format: wss://host:port/api2/json/nodes/node/qemu/vmid/vncwebsocket?port=PORT&vncticket=TICKET
+        import urllib.parse
+        encoded_ticket = urllib.parse.quote(ticket, safe='')
+        proxmox_ws_url = (
+            f"wss://{PROXMOX_HOST}:{PROXMOX_PORT}/api2/json/nodes/{PROXMOX_NODE}"
+            f"/qemu/{vm_id}/vncwebsocket?port={port}&vncticket={encoded_ticket}"
+        )
+
+        # Create SSL context that doesn't verify certificates (for self-signed Proxmox certs)
+        ssl_context = ssl.create_default_context()
+        if not PROXMOX_VERIFY_SSL:
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
+        # Connect to Proxmox VNC WebSocket
+        async with websockets.connect(
+            proxmox_ws_url,
+            ssl=ssl_context,
+            subprotocols=['binary'],
+            max_size=None,
+            ping_interval=30,
+            ping_timeout=10
+        ) as proxmox_ws:
+            logger.info(f"Connected to Proxmox VNC WebSocket for VM {vm_id}")
+
+            # Bidirectional proxy
+            async def client_to_proxmox():
+                """Forward messages from browser client to Proxmox."""
+                try:
+                    while True:
+                        data = await websocket.receive_bytes()
+                        await proxmox_ws.send(data)
+                except WebSocketDisconnect:
+                    logger.info(f"Client disconnected from VNC session {session_id}")
+                except Exception as e:
+                    logger.debug(f"Client->Proxmox error: {e}")
+
+            async def proxmox_to_client():
+                """Forward messages from Proxmox to browser client."""
+                try:
+                    async for message in proxmox_ws:
+                        if isinstance(message, bytes):
+                            await websocket.send_bytes(message)
+                        else:
+                            await websocket.send_text(message)
+                except websockets.exceptions.ConnectionClosed:
+                    logger.info(f"Proxmox VNC connection closed for session {session_id}")
+                except Exception as e:
+                    logger.debug(f"Proxmox->Client error: {e}")
+
+            # Run both directions concurrently
+            await asyncio.gather(
+                client_to_proxmox(),
+                proxmox_to_client(),
+                return_exceptions=True
+            )
+
+    except websockets.exceptions.WebSocketException as e:
+        logger.error(f"Failed to connect to Proxmox VNC: {e}")
+        await websocket.close(code=4502, reason="Failed to connect to Proxmox VNC")
+    except Exception as e:
+        logger.error(f"VNC WebSocket proxy error: {e}")
+        await websocket.close(code=4500, reason=str(e))
+    finally:
+        # Log disconnection
+        if connection_id:
+            await update_console_disconnection(db, connection_id)
+        logger.info(f"VNC WebSocket proxy closed for session {session_id}")
+
+
+@app.websocket("/api/spice/{session_id}/ws")
+async def spice_websocket_proxy(websocket: WebSocket, session_id: str):
+    """
+    WebSocket proxy for SPICE connections.
+
+    This endpoint proxies WebSocket traffic between the browser's spice-html5 client
+    and the Proxmox SPICE WebSocket endpoint.
+    """
+    if not CONSOLE_ENABLED or not SPICE_ENABLED:
+        await websocket.close(code=4003, reason="SPICE console access is disabled")
+        return
+
+    if not proxmox_api:
+        await websocket.close(code=4503, reason="Proxmox not available")
+        return
+
+    db = await get_db()
+    row = await db.fetchrow(
+        "SELECT status, vm_id FROM vm_sessions WHERE session_id = $1",
+        session_id
+    )
+
+    if not row:
+        await websocket.close(code=4404, reason="Session not found")
+        return
+
+    if row['status'] != 'running':
+        await websocket.close(code=4400, reason="Session is not running")
+        return
+
+    vm_id = row['vm_id']
+    if not vm_id:
+        await websocket.close(code=4400, reason="No VM associated with this session")
+        return
+
+    # Accept the WebSocket connection from the client
+    await websocket.accept()
+    logger.info(f"SPICE WebSocket connection accepted for session {session_id}")
+
+    # Log the console connection for auditing
+    connection_id = await log_console_connection(
+        db, session_id, 'spice',
+        client_ip=websocket.client.host if websocket.client else None,
+        user_agent=None
+    )
+
+    try:
+        # Get a fresh SPICE ticket for the proxied connection
+        result = proxmox_api.nodes(PROXMOX_NODE).qemu(vm_id).spiceproxy.post()
+        ticket = result.get('ticket', '')
+        tls_port = result.get('tls-port', result.get('port', 3128))
+
+        # Build Proxmox SPICE WebSocket URL
+        import urllib.parse
+        encoded_ticket = urllib.parse.quote(ticket, safe='')
+        proxmox_ws_url = (
+            f"wss://{PROXMOX_HOST}:{PROXMOX_PORT}/api2/json/nodes/{PROXMOX_NODE}"
+            f"/qemu/{vm_id}/spiceshell?port={tls_port}&ticket={encoded_ticket}"
+        )
+
+        # Create SSL context
+        ssl_context = ssl.create_default_context()
+        if not PROXMOX_VERIFY_SSL:
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
+        # Connect to Proxmox SPICE WebSocket
+        async with websockets.connect(
+            proxmox_ws_url,
+            ssl=ssl_context,
+            subprotocols=['binary'],
+            max_size=None,
+            ping_interval=30,
+            ping_timeout=10
+        ) as proxmox_ws:
+            logger.info(f"Connected to Proxmox SPICE WebSocket for VM {vm_id}")
+
+            # Bidirectional proxy
+            async def client_to_proxmox():
+                """Forward messages from browser client to Proxmox."""
+                try:
+                    while True:
+                        data = await websocket.receive_bytes()
+                        await proxmox_ws.send(data)
+                except WebSocketDisconnect:
+                    logger.info(f"Client disconnected from SPICE session {session_id}")
+                except Exception as e:
+                    logger.debug(f"Client->Proxmox error: {e}")
+
+            async def proxmox_to_client():
+                """Forward messages from Proxmox to browser client."""
+                try:
+                    async for message in proxmox_ws:
+                        if isinstance(message, bytes):
+                            await websocket.send_bytes(message)
+                        else:
+                            await websocket.send_text(message)
+                except websockets.exceptions.ConnectionClosed:
+                    logger.info(f"Proxmox SPICE connection closed for session {session_id}")
+                except Exception as e:
+                    logger.debug(f"Proxmox->Client error: {e}")
+
+            # Run both directions concurrently
+            await asyncio.gather(
+                client_to_proxmox(),
+                proxmox_to_client(),
+                return_exceptions=True
+            )
+
+    except websockets.exceptions.WebSocketException as e:
+        logger.error(f"Failed to connect to Proxmox SPICE: {e}")
+        await websocket.close(code=4502, reason="Failed to connect to Proxmox SPICE")
+    except Exception as e:
+        logger.error(f"SPICE WebSocket proxy error: {e}")
+        await websocket.close(code=4500, reason=str(e))
+    finally:
+        # Log disconnection
+        if connection_id:
+            await update_console_disconnection(db, connection_id)
+        logger.info(f"SPICE WebSocket proxy closed for session {session_id}")
 
 
 # ============================================================================

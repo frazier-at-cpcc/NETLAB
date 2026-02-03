@@ -1,0 +1,607 @@
+/**
+ * LabsConnect Console Viewer Styles
+ *
+ * Styles for the VNC/SPICE console viewer interface.
+ */
+
+/* ========================================================================
+   Console Container
+   ======================================================================== */
+
+.console-wrapper {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100vw;
+    background-color: #1a1a2e;
+    overflow: hidden;
+}
+
+.console-container {
+    flex: 1;
+    position: relative;
+    background-color: #000;
+    overflow: hidden;
+}
+
+.console-container canvas {
+    display: block;
+    margin: 0 auto;
+}
+
+/* noVNC specific styles */
+.console-container .vnc-screen {
+    width: 100%;
+    height: 100%;
+}
+
+/* SPICE specific styles */
+.console-container .spice-display {
+    max-width: 100%;
+    max-height: 100%;
+}
+
+/* ========================================================================
+   Console Toolbar
+   ======================================================================== */
+
+.console-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%);
+    border-bottom: 1px solid #0f3460;
+    min-height: 48px;
+    flex-shrink: 0;
+}
+
+.console-toolbar-left,
+.console-toolbar-center,
+.console-toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.console-toolbar-left {
+    flex: 1;
+    justify-content: flex-start;
+}
+
+.console-toolbar-center {
+    flex: 0;
+    justify-content: center;
+}
+
+.console-toolbar-right {
+    flex: 1;
+    justify-content: flex-end;
+}
+
+/* Toolbar buttons */
+.console-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #e0e0e0;
+    background-color: #0f3460;
+    border: 1px solid #1a4a7a;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.console-btn:hover {
+    background-color: #1a4a7a;
+    border-color: #2a5a8a;
+}
+
+.console-btn:active {
+    transform: scale(0.98);
+}
+
+.console-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.console-btn svg {
+    width: 16px;
+    height: 16px;
+    margin-right: 6px;
+}
+
+.console-btn.icon-only {
+    padding: 8px;
+}
+
+.console-btn.icon-only svg {
+    margin-right: 0;
+}
+
+/* Primary button style */
+.console-btn.primary {
+    background-color: #e94560;
+    border-color: #e94560;
+    color: white;
+}
+
+.console-btn.primary:hover {
+    background-color: #ff6b6b;
+    border-color: #ff6b6b;
+}
+
+/* Danger button style */
+.console-btn.danger {
+    background-color: #dc3545;
+    border-color: #dc3545;
+}
+
+.console-btn.danger:hover {
+    background-color: #e35d6a;
+    border-color: #e35d6a;
+}
+
+/* Protocol selector */
+.protocol-select {
+    padding: 8px 12px;
+    font-size: 13px;
+    color: #e0e0e0;
+    background-color: #0f3460;
+    border: 1px solid #1a4a7a;
+    border-radius: 6px;
+    cursor: pointer;
+    outline: none;
+}
+
+.protocol-select:hover {
+    border-color: #2a5a8a;
+}
+
+.protocol-select:focus {
+    border-color: #e94560;
+    box-shadow: 0 0 0 2px rgba(233, 69, 96, 0.2);
+}
+
+/* ========================================================================
+   Connection Status
+   ======================================================================== */
+
+.connection-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #888;
+}
+
+.status-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: #666;
+}
+
+.status-indicator.connecting {
+    background-color: #ffc107;
+    animation: pulse 1.5s infinite;
+}
+
+.status-indicator.connected {
+    background-color: #28a745;
+}
+
+.status-indicator.disconnected {
+    background-color: #dc3545;
+}
+
+.status-indicator.error {
+    background-color: #dc3545;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* ========================================================================
+   Connection Overlay
+   ======================================================================== */
+
+.console-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(0, 0, 0, 0.85);
+    z-index: 100;
+}
+
+.console-overlay.hidden {
+    display: none;
+}
+
+.overlay-content {
+    text-align: center;
+    color: #e0e0e0;
+    max-width: 400px;
+    padding: 32px;
+}
+
+.overlay-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+}
+
+.overlay-title {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.overlay-message {
+    font-size: 14px;
+    color: #888;
+    margin-bottom: 24px;
+}
+
+/* Loading spinner */
+.spinner {
+    width: 48px;
+    height: 48px;
+    border: 4px solid #333;
+    border-top-color: #e94560;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 16px;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ========================================================================
+   Protocol Badge
+   ======================================================================== */
+
+.protocol-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    border-radius: 4px;
+    letter-spacing: 0.5px;
+}
+
+.protocol-badge.vnc {
+    background-color: rgba(0, 123, 255, 0.2);
+    color: #4dabff;
+    border: 1px solid rgba(0, 123, 255, 0.3);
+}
+
+.protocol-badge.spice {
+    background-color: rgba(255, 193, 7, 0.2);
+    color: #ffc107;
+    border: 1px solid rgba(255, 193, 7, 0.3);
+}
+
+/* ========================================================================
+   Session Info Bar
+   ======================================================================== */
+
+.session-info-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 16px;
+    background-color: #0f0f1a;
+    border-top: 1px solid #0f3460;
+    font-size: 12px;
+    color: #888;
+    flex-shrink: 0;
+}
+
+.session-info-left,
+.session-info-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.session-info-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.session-info-label {
+    color: #666;
+}
+
+.session-info-value {
+    color: #e0e0e0;
+}
+
+/* ========================================================================
+   Keyboard Shortcuts Help
+   ======================================================================== */
+
+.shortcuts-panel {
+    position: absolute;
+    top: 60px;
+    right: 16px;
+    background-color: #1a1a2e;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    padding: 16px;
+    min-width: 280px;
+    z-index: 200;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    display: none;
+}
+
+.shortcuts-panel.visible {
+    display: block;
+}
+
+.shortcuts-panel h4 {
+    margin: 0 0 12px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #e0e0e0;
+}
+
+.shortcuts-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.shortcut-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+}
+
+.shortcut-keys {
+    display: flex;
+    gap: 4px;
+}
+
+.shortcut-key {
+    padding: 2px 6px;
+    background-color: #0f3460;
+    border: 1px solid #1a4a7a;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 11px;
+    color: #e0e0e0;
+}
+
+.shortcut-action {
+    color: #888;
+}
+
+/* ========================================================================
+   Fullscreen Mode
+   ======================================================================== */
+
+.console-wrapper:fullscreen,
+.console-wrapper:-webkit-full-screen {
+    background-color: #000;
+}
+
+.console-wrapper:fullscreen .console-toolbar,
+.console-wrapper:-webkit-full-screen .console-toolbar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    z-index: 1000;
+}
+
+.console-wrapper:fullscreen .console-toolbar:hover,
+.console-wrapper:-webkit-full-screen .console-toolbar:hover {
+    opacity: 1;
+}
+
+.console-wrapper:fullscreen .session-info-bar,
+.console-wrapper:-webkit-full-screen .session-info-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.console-wrapper:fullscreen .session-info-bar:hover,
+.console-wrapper:-webkit-full-screen .session-info-bar:hover {
+    opacity: 1;
+}
+
+/* ========================================================================
+   Mobile Responsive
+   ======================================================================== */
+
+@media (max-width: 768px) {
+    .console-toolbar {
+        padding: 8px;
+        flex-wrap: wrap;
+    }
+
+    .console-toolbar-left,
+    .console-toolbar-right {
+        flex: 0 0 auto;
+    }
+
+    .console-btn span {
+        display: none;
+    }
+
+    .console-btn svg {
+        margin-right: 0;
+    }
+
+    .protocol-select {
+        max-width: 100px;
+    }
+
+    .session-info-bar {
+        display: none;
+    }
+
+    .shortcuts-panel {
+        right: 8px;
+        left: 8px;
+        min-width: auto;
+    }
+}
+
+/* ========================================================================
+   Touch Device Support
+   ======================================================================== */
+
+@media (hover: none) and (pointer: coarse) {
+    .console-btn {
+        padding: 12px 16px;
+    }
+
+    .console-btn.icon-only {
+        padding: 12px;
+    }
+
+    /* Show virtual keyboard button on touch devices */
+    .virtual-keyboard-btn {
+        display: inline-flex;
+    }
+}
+
+@media (hover: hover) {
+    /* Hide virtual keyboard button on non-touch devices */
+    .virtual-keyboard-btn {
+        display: none;
+    }
+}
+
+/* ========================================================================
+   Error States
+   ======================================================================== */
+
+.console-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    text-align: center;
+    color: #dc3545;
+    padding: 32px;
+}
+
+.console-error-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+}
+
+.console-error-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.console-error-message {
+    font-size: 14px;
+    color: #888;
+    margin-bottom: 24px;
+    max-width: 400px;
+}
+
+/* ========================================================================
+   SPICE Audio Indicator
+   ======================================================================== */
+
+.audio-indicator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    background-color: rgba(40, 167, 69, 0.2);
+    border-radius: 4px;
+    font-size: 12px;
+    color: #28a745;
+}
+
+.audio-indicator.muted {
+    background-color: rgba(108, 117, 125, 0.2);
+    color: #6c757d;
+}
+
+.audio-indicator svg {
+    width: 14px;
+    height: 14px;
+}
+
+/* ========================================================================
+   Tab Styles (for unified session page)
+   ======================================================================== */
+
+.session-tabs {
+    display: flex;
+    background-color: #0f0f1a;
+    border-bottom: 1px solid #0f3460;
+}
+
+.session-tab {
+    flex: 1;
+    padding: 12px 24px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #888;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+}
+
+.session-tab:hover {
+    color: #e0e0e0;
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+.session-tab.active {
+    color: #e94560;
+    border-bottom-color: #e94560;
+}
+
+.tab-content {
+    display: none;
+    height: calc(100vh - 48px);
+}
+
+.tab-content.active {
+    display: block;
+}
+
+.tab-content iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+}

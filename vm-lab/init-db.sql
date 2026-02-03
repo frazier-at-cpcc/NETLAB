@@ -346,6 +346,75 @@ FROM session_recordings r
 JOIN vm_sessions s ON r.session_id = s.session_id
 ORDER BY r.started_at DESC;
 
+-- ============================================================================
+-- Console Access (VNC/SPICE)
+-- ============================================================================
+-- Tracks console connection usage for analytics and auditing
+
+CREATE TABLE IF NOT EXISTS console_connections (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(64) NOT NULL REFERENCES vm_sessions(session_id),
+
+    -- Connection details
+    protocol VARCHAR(10) NOT NULL,  -- 'vnc' or 'spice'
+    connected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    disconnected_at TIMESTAMP WITH TIME ZONE,
+    duration_seconds INTEGER,
+
+    -- Client information
+    client_ip VARCHAR(45),
+    user_agent TEXT,
+    client_info JSONB,  -- Additional client details (browser, resolution, etc.)
+
+    CONSTRAINT valid_protocol CHECK (protocol IN ('vnc', 'spice'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_console_connections_session ON console_connections(session_id);
+CREATE INDEX IF NOT EXISTS idx_console_connections_protocol ON console_connections(protocol);
+CREATE INDEX IF NOT EXISTS idx_console_connections_time ON console_connections(connected_at);
+
+-- View for console usage statistics
+CREATE OR REPLACE VIEW console_usage_stats AS
+SELECT
+    s.session_id,
+    s.user_name,
+    s.user_email,
+    s.course_title,
+    c.protocol,
+    COUNT(*) as connection_count,
+    SUM(c.duration_seconds) as total_duration_seconds,
+    MIN(c.connected_at) as first_connection,
+    MAX(c.connected_at) as last_connection
+FROM vm_sessions s
+JOIN console_connections c ON s.session_id = c.session_id
+GROUP BY s.session_id, s.user_name, s.user_email, s.course_title, c.protocol;
+
+-- ============================================================================
+-- Migration: Add console columns to vm_sessions if not exists
+-- ============================================================================
+-- These ALTER statements will fail gracefully if columns already exist
+
+DO $$
+BEGIN
+    -- Add console_enabled flag
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'vm_sessions' AND column_name = 'console_enabled') THEN
+        ALTER TABLE vm_sessions ADD COLUMN console_enabled BOOLEAN DEFAULT TRUE;
+    END IF;
+
+    -- Add console_last_connected_at timestamp
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'vm_sessions' AND column_name = 'console_last_connected_at') THEN
+        ALTER TABLE vm_sessions ADD COLUMN console_last_connected_at TIMESTAMP WITH TIME ZONE;
+    END IF;
+
+    -- Add default_console_protocol
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'vm_sessions' AND column_name = 'default_console_protocol') THEN
+        ALTER TABLE vm_sessions ADD COLUMN default_console_protocol VARCHAR(10) DEFAULT 'vnc';
+    END IF;
+END $$;
+
 -- Grant permissions
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO lab;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO lab;
