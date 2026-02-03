@@ -1540,6 +1540,91 @@ async def config_xml():
 
 
 # ============================================================================
+# Console Viewer Endpoints
+# ============================================================================
+
+@app.get("/lti/session/{session_id}/console")
+async def session_console(request: Request, session_id: str, protocol: Optional[str] = None):
+    """
+    Console viewer page for a session.
+
+    Allows students and instructors to view the VM's graphical console
+    via VNC or SPICE directly in their browser.
+    """
+    # Get session info from orchestrator
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            # Get session details
+            session_response = await client.get(f"{ORCHESTRATOR_API}/api/session/{session_id}")
+            if session_response.status_code != 200:
+                return HTMLResponse(
+                    content="<h1>Session Not Found</h1><p>The requested session does not exist or has expired.</p>",
+                    status_code=404
+                )
+            session_data = session_response.json()
+
+            # Get console capabilities
+            console_response = await client.get(f"{ORCHESTRATOR_API}/api/session/{session_id}/console")
+            if console_response.status_code != 200:
+                return HTMLResponse(
+                    content="<h1>Console Unavailable</h1><p>Console access is not available for this session.</p>",
+                    status_code=503
+                )
+            console_data = console_response.json()
+
+        except httpx.RequestError as e:
+            logger.error(f"Failed to fetch session data: {e}")
+            return HTMLResponse(
+                content="<h1>Service Unavailable</h1><p>Unable to connect to orchestration service.</p>",
+                status_code=503
+            )
+
+    # Determine protocol to use
+    default_protocol = protocol or console_data.get('default_protocol', 'vnc')
+    if default_protocol not in console_data.get('protocols_available', ['vnc']):
+        default_protocol = console_data.get('protocols_available', ['vnc'])[0]
+
+    return templates.TemplateResponse(
+        "console_viewer.html",
+        {
+            "request": request,
+            "session_id": session_id,
+            "vm_ip": session_data.get('vm_ip', ''),
+            "default_protocol": default_protocol,
+            "vnc_enabled": console_data.get('vnc_enabled', True),
+            "spice_enabled": console_data.get('spice_enabled', False),
+            "token": ""  # Token would be passed for authentication if needed
+        }
+    )
+
+
+# Console API Proxies (for the console viewer to use)
+
+@app.get("/api/session/{session_id}/console")
+async def proxy_console_capabilities(request: Request, session_id: str):
+    """Proxy console capabilities endpoint."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(f"{ORCHESTRATOR_API}/api/session/{session_id}/console")
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@app.post("/api/session/{session_id}/vnc-ticket")
+async def proxy_vnc_ticket(request: Request, session_id: str):
+    """Proxy VNC ticket request."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(f"{ORCHESTRATOR_API}/api/session/{session_id}/vnc-ticket")
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@app.post("/api/session/{session_id}/spice-ticket")
+async def proxy_spice_ticket(request: Request, session_id: str):
+    """Proxy SPICE ticket request."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(f"{ORCHESTRATOR_API}/api/session/{session_id}/spice-ticket")
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+# ============================================================================
 # Health and Status Endpoints
 # ============================================================================
 

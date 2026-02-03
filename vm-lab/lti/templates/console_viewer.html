@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Console - {{ session_id }} | LabsConnect</title>
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='10' fill='%23e94560'/%3E%3Ctext x='50' y='70' font-size='60' text-anchor='middle' fill='white'%3ELC%3C/text%3E%3C/svg%3E">
+
+    <!-- Console Styles -->
+    <link rel="stylesheet" href="/static/css/console.css">
+
+    <!-- noVNC Library -->
+    <script type="module" crossorigin="anonymous">
+        // Import noVNC from CDN (ES modules)
+        import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js';
+        window.RFB = RFB;
+        window.dispatchEvent(new Event('novnc-loaded'));
+    </script>
+
+    <!-- spice-html5 Library (loaded conditionally) -->
+    <script>
+        // SPICE will be loaded on-demand if the user selects SPICE protocol
+        window.loadSpiceLibrary = function() {
+            return new Promise((resolve, reject) => {
+                if (window.SpiceMainConn) {
+                    resolve();
+                    return;
+                }
+
+                const scripts = [
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/spicearraybuffer.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/enums.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/atKeynames.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/utils.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/png.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/lz.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/quic.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/bitmap.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/spicedataview.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/spicetype.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/spicemsg.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/wire.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/spiceconn.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/display.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/main.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/inputs.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/cursor.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/playback.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/simulatecursor.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/filexfer.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/webm.js',
+                    'https://cdn.jsdelivr.net/gh/nickvdyck/spice-html5@0.2.3/resize.js'
+                ];
+
+                let loaded = 0;
+                scripts.forEach((src, index) => {
+                    const script = document.createElement('script');
+                    script.src = src;
+                    script.onload = () => {
+                        loaded++;
+                        if (loaded === scripts.length) {
+                            resolve();
+                        }
+                    };
+                    script.onerror = reject;
+                    document.head.appendChild(script);
+                });
+            });
+        };
+    </script>
+
+    <style>
+        /* Inline critical styles for faster render */
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #1a1a2e;
+            color: #e0e0e0;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <div class="console-wrapper" id="console-wrapper">
+        <!-- Toolbar -->
+        <div class="console-toolbar">
+            <div class="console-toolbar-left">
+                <!-- Protocol selector -->
+                <select id="protocol-select" class="protocol-select" title="Select console protocol">
+                    <option value="vnc" {% if default_protocol == 'vnc' %}selected{% endif %}>VNC</option>
+                    {% if spice_enabled %}
+                    <option value="spice" {% if default_protocol == 'spice' %}selected{% endif %}>SPICE</option>
+                    {% endif %}
+                </select>
+
+                <!-- Protocol badge -->
+                <span id="protocol-badge" class="protocol-badge vnc">VNC</span>
+
+                <!-- Connection status -->
+                <div class="connection-status">
+                    <span id="status-indicator" class="status-indicator"></span>
+                    <span id="status-text">Disconnected</span>
+                </div>
+            </div>
+
+            <div class="console-toolbar-center">
+                <!-- Special key buttons -->
+                <button id="btn-ctrl-alt-del" class="console-btn" title="Send Ctrl+Alt+Del">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="2" y="4" width="20" height="16" rx="2"/>
+                        <line x1="6" y1="12" x2="18" y2="12"/>
+                    </svg>
+                    <span>Ctrl+Alt+Del</span>
+                </button>
+            </div>
+
+            <div class="console-toolbar-right">
+                <!-- Scaling toggle -->
+                <button id="btn-scale" class="console-btn icon-only" title="Toggle scaling">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+                    </svg>
+                </button>
+
+                <!-- Fullscreen toggle -->
+                <button id="btn-fullscreen" class="console-btn icon-only" title="Toggle fullscreen (F11)">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+                    </svg>
+                </button>
+
+                <!-- Reconnect button -->
+                <button id="btn-reconnect" class="console-btn" title="Reconnect to console">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 4v6h-6M1 20v-6h6"/>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                    <span>Reconnect</span>
+                </button>
+
+                <!-- Help/shortcuts -->
+                <button id="btn-help" class="console-btn icon-only" title="Keyboard shortcuts">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- Console display area -->
+        <div class="console-container" id="console-container">
+            <!-- Connection overlay -->
+            <div id="console-overlay" class="console-overlay">
+                <div class="overlay-content">
+                    <div class="spinner"></div>
+                    <div class="overlay-title" id="overlay-title">Connecting...</div>
+                    <div class="overlay-message" id="overlay-message">Establishing connection to VM console</div>
+                    <button id="btn-retry" class="console-btn primary" style="display: none;">
+                        Retry Connection
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Session info bar -->
+        <div class="session-info-bar">
+            <div class="session-info-left">
+                <div class="session-info-item">
+                    <span class="session-info-label">Session:</span>
+                    <span class="session-info-value">{{ session_id }}</span>
+                </div>
+                {% if vm_ip %}
+                <div class="session-info-item">
+                    <span class="session-info-label">VM IP:</span>
+                    <span class="session-info-value">{{ vm_ip }}</span>
+                </div>
+                {% endif %}
+            </div>
+            <div class="session-info-right">
+                <div class="session-info-item">
+                    <span class="session-info-label">Press</span>
+                    <span class="session-info-value">F11</span>
+                    <span class="session-info-label">for fullscreen</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Keyboard shortcuts panel -->
+        <div id="shortcuts-panel" class="shortcuts-panel">
+            <h4>Keyboard Shortcuts</h4>
+            <div class="shortcuts-list">
+                <div class="shortcut-item">
+                    <div class="shortcut-keys">
+                        <span class="shortcut-key">F11</span>
+                    </div>
+                    <span class="shortcut-action">Toggle fullscreen</span>
+                </div>
+                <div class="shortcut-item">
+                    <div class="shortcut-keys">
+                        <span class="shortcut-key">Ctrl</span>
+                        <span class="shortcut-key">Alt</span>
+                        <span class="shortcut-key">Del</span>
+                    </div>
+                    <span class="shortcut-action">Send to VM (use button)</span>
+                </div>
+                <div class="shortcut-item">
+                    <div class="shortcut-keys">
+                        <span class="shortcut-key">Esc</span>
+                    </div>
+                    <span class="shortcut-action">Release keyboard focus</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Console Client Script -->
+    <script src="/static/js/console-client.js"></script>
+
+    <script>
+        // Session configuration from server
+        const SESSION_CONFIG = {
+            sessionId: "{{ session_id }}",
+            defaultProtocol: "{{ default_protocol or 'vnc' }}",
+            vncEnabled: {{ 'true' if vnc_enabled else 'false' }},
+            spiceEnabled: {{ 'true' if spice_enabled else 'false' }},
+            vmIp: "{{ vm_ip or '' }}",
+            token: "{{ token or '' }}"
+        };
+
+        // DOM elements
+        const consoleContainer = document.getElementById('console-container');
+        const consoleOverlay = document.getElementById('console-overlay');
+        const overlayTitle = document.getElementById('overlay-title');
+        const overlayMessage = document.getElementById('overlay-message');
+        const btnRetry = document.getElementById('btn-retry');
+        const statusIndicator = document.getElementById('status-indicator');
+        const statusText = document.getElementById('status-text');
+        const protocolBadge = document.getElementById('protocol-badge');
+        const protocolSelect = document.getElementById('protocol-select');
+        const shortcutsPanel = document.getElementById('shortcuts-panel');
+
+        let consoleClient = null;
+        let isScaling = true;
+
+        // Wait for noVNC to load
+        window.addEventListener('novnc-loaded', initializeConsole);
+
+        // If noVNC is already loaded (cached), initialize immediately
+        if (window.RFB) {
+            initializeConsole();
+        }
+
+        function initializeConsole() {
+            // Create console client
+            consoleClient = new LabConsoleClient({
+                sessionId: SESSION_CONFIG.sessionId,
+                container: consoleContainer,
+                protocol: SESSION_CONFIG.defaultProtocol,
+                token: SESSION_CONFIG.token,
+                scaleViewport: true,
+                onConnect: handleConnect,
+                onDisconnect: handleDisconnect,
+                onError: handleError,
+                onCredentialsRequired: handleCredentialsRequired
+            });
+
+            // Set up event listeners
+            setupEventListeners();
+
+            // Auto-connect
+            connect();
+        }
+
+        function setupEventListeners() {
+            // Protocol selector
+            protocolSelect.addEventListener('change', async (e) => {
+                const newProtocol = e.target.value;
+                updateProtocolBadge(newProtocol);
+
+                if (newProtocol === 'spice') {
+                    showOverlay('Loading SPICE...', 'Loading SPICE library');
+                    try {
+                        await window.loadSpiceLibrary();
+                    } catch (error) {
+                        showError('Failed to load SPICE library');
+                        protocolSelect.value = 'vnc';
+                        updateProtocolBadge('vnc');
+                        return;
+                    }
+                }
+
+                showOverlay('Switching protocol...', `Connecting via ${newProtocol.toUpperCase()}`);
+                await consoleClient.switchProtocol(newProtocol);
+            });
+
+            // Ctrl+Alt+Del button
+            document.getElementById('btn-ctrl-alt-del').addEventListener('click', () => {
+                consoleClient.sendCtrlAltDel();
+            });
+
+            // Scale toggle
+            document.getElementById('btn-scale').addEventListener('click', () => {
+                isScaling = !isScaling;
+                consoleClient.setScaleViewport(isScaling);
+                document.getElementById('btn-scale').classList.toggle('active', isScaling);
+            });
+
+            // Fullscreen toggle
+            document.getElementById('btn-fullscreen').addEventListener('click', () => {
+                consoleClient.toggleFullscreen();
+            });
+
+            // Reconnect button
+            document.getElementById('btn-reconnect').addEventListener('click', () => {
+                connect();
+            });
+
+            // Retry button (in overlay)
+            btnRetry.addEventListener('click', () => {
+                connect();
+            });
+
+            // Help toggle
+            document.getElementById('btn-help').addEventListener('click', () => {
+                shortcutsPanel.classList.toggle('visible');
+            });
+
+            // Close shortcuts panel when clicking outside
+            document.addEventListener('click', (e) => {
+                if (!shortcutsPanel.contains(e.target) &&
+                    !document.getElementById('btn-help').contains(e.target)) {
+                    shortcutsPanel.classList.remove('visible');
+                }
+            });
+
+            // Keyboard shortcuts
+            document.addEventListener('keydown', (e) => {
+                // F11 for fullscreen (prevent default browser behavior)
+                if (e.key === 'F11') {
+                    e.preventDefault();
+                    consoleClient.toggleFullscreen();
+                }
+            });
+
+            // Handle fullscreen changes
+            document.addEventListener('fullscreenchange', handleFullscreenChange);
+            document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+        }
+
+        async function connect() {
+            showOverlay('Connecting...', 'Establishing connection to VM console');
+            updateStatus('connecting');
+            btnRetry.style.display = 'none';
+
+            try {
+                await consoleClient.connect();
+            } catch (error) {
+                showError(error.message);
+            }
+        }
+
+        function handleConnect(details) {
+            console.log('Connected:', details);
+            hideOverlay();
+            updateStatus('connected');
+        }
+
+        function handleDisconnect(details) {
+            console.log('Disconnected:', details);
+            updateStatus('disconnected');
+
+            if (!details.clean) {
+                showError('Connection lost. Click Retry to reconnect.');
+            } else {
+                showOverlay('Disconnected', 'Connection closed');
+                btnRetry.style.display = 'inline-flex';
+            }
+        }
+
+        function handleError(error) {
+            console.error('Console error:', error);
+            showError(error.message || 'An error occurred');
+        }
+
+        function handleCredentialsRequired() {
+            // For VNC, credentials are handled via the ticket
+            // This shouldn't normally be called
+            console.warn('Credentials required - this is unexpected');
+        }
+
+        function handleFullscreenChange() {
+            const isFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
+            document.getElementById('btn-fullscreen').classList.toggle('active', isFullscreen);
+        }
+
+        function showOverlay(title, message) {
+            overlayTitle.textContent = title;
+            overlayMessage.textContent = message;
+            consoleOverlay.classList.remove('hidden');
+            btnRetry.style.display = 'none';
+        }
+
+        function hideOverlay() {
+            consoleOverlay.classList.add('hidden');
+        }
+
+        function showError(message) {
+            overlayTitle.textContent = 'Connection Error';
+            overlayMessage.textContent = message;
+            consoleOverlay.classList.remove('hidden');
+            btnRetry.style.display = 'inline-flex';
+            updateStatus('error');
+        }
+
+        function updateStatus(status) {
+            statusIndicator.className = 'status-indicator ' + status;
+
+            const statusMessages = {
+                'connecting': 'Connecting...',
+                'connected': 'Connected',
+                'disconnected': 'Disconnected',
+                'error': 'Error'
+            };
+            statusText.textContent = statusMessages[status] || status;
+        }
+
+        function updateProtocolBadge(protocol) {
+            protocolBadge.textContent = protocol.toUpperCase();
+            protocolBadge.className = 'protocol-badge ' + protocol;
+        }
+    </script>
+</body>
+</html>
