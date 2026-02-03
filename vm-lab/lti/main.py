@@ -1540,6 +1540,71 @@ async def config_xml():
 
 
 # ============================================================================
+# Session View Endpoints
+# ============================================================================
+
+@app.get("/lti/session/{session_id}")
+async def session_unified_view(request: Request, session_id: str, tab: Optional[str] = None):
+    """
+    Unified session view with tabs for Terminal (SSH) and Console (VNC/SPICE).
+
+    This is the main view students see after their VM is provisioned.
+    """
+    # Get session info from orchestrator
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            # Get session details
+            session_response = await client.get(f"{ORCHESTRATOR_API}/api/session/{session_id}")
+            if session_response.status_code != 200:
+                return HTMLResponse(
+                    content="<h1>Session Not Found</h1><p>The requested session does not exist or has expired.</p>",
+                    status_code=404
+                )
+            session_data = session_response.json()
+
+            # Check if session is running
+            if session_data.get('status') != 'running':
+                # Redirect to loading page if not running
+                return RedirectResponse(url=f"/lti/loading/{session_id}", status_code=302)
+
+            # Get console capabilities
+            console_enabled = False
+            default_protocol = 'vnc'
+            try:
+                console_response = await client.get(f"{ORCHESTRATOR_API}/api/session/{session_id}/console")
+                if console_response.status_code == 200:
+                    console_data = console_response.json()
+                    console_enabled = console_data.get('vnc_enabled', False) or console_data.get('spice_enabled', False)
+                    default_protocol = console_data.get('default_protocol', 'vnc')
+            except Exception:
+                pass  # Console not available
+
+        except httpx.RequestError as e:
+            logger.error(f"Failed to fetch session data: {e}")
+            return HTMLResponse(
+                content="<h1>Service Unavailable</h1><p>Unable to connect to orchestration service.</p>",
+                status_code=503
+            )
+
+    # Build terminal URL (the original ttyd URL)
+    terminal_url = session_data.get('url', f"https://lab-{session_id}.{DOMAIN}")
+
+    return templates.TemplateResponse(
+        "lab_session.html",
+        {
+            "request": request,
+            "session_id": session_id,
+            "vm_ip": session_data.get('vm_ip', ''),
+            "user_name": session_data.get('user_name', ''),
+            "terminal_url": terminal_url,
+            "console_enabled": console_enabled,
+            "default_protocol": default_protocol,
+            "initial_tab": tab or "terminal"
+        }
+    )
+
+
+# ============================================================================
 # Console Viewer Endpoints
 # ============================================================================
 
