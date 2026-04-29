@@ -55,6 +55,8 @@ PROXMOX_NODE = os.getenv("PROXMOX_NODE", "host1")  # Proxmox node name
 PROXMOX_STORAGE = os.getenv("PROXMOX_STORAGE", "not-vsan")
 PROXMOX_TEMPLATE_ID = int(os.getenv("PROXMOX_TEMPLATE_ID", "500"))
 PROXMOX_BRIDGE = os.getenv("PROXMOX_BRIDGE", "vmbr0")
+PROXMOX_VLAN_TAG = os.getenv("PROXMOX_VLAN_TAG", "")  # Optional VLAN tag for net0; empty = use bridge native/untagged
+PROXMOX_MTU = os.getenv("PROXMOX_MTU", "")  # Optional MTU for net0; empty = Proxmox default (1500)
 
 # VM resource configuration
 VM_RAM_MB = int(os.getenv("VM_RAM_MB", "16384"))
@@ -202,6 +204,22 @@ def get_proxmox_connection() -> ProxmoxAPI:
         )
 
 
+async def connect_proxmox_with_retry():
+    global proxmox_api
+    delay = 10
+    while True:
+        try:
+            conn = get_proxmox_connection()
+            version = conn.version.get()
+            proxmox_api = conn
+            logger.info(f"Proxmox connected: {PROXMOX_HOST} (version {version.get('version', 'unknown')})")
+            return
+        except Exception as e:
+            logger.warning(f"Proxmox not reachable, retrying in {delay}s: {e}")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 120)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - setup and teardown."""
@@ -223,15 +241,8 @@ async def lifespan(app: FastAPI):
     docker_client = docker.from_env()
     logger.info("Docker client connected")
 
-    # Setup Proxmox connection
-    try:
-        proxmox_api = get_proxmox_connection()
-        # Test connection
-        version = proxmox_api.version.get()
-        logger.info(f"Proxmox connected: {PROXMOX_HOST} (version {version.get('version', 'unknown')})")
-    except Exception as e:
-        logger.error(f"Failed to connect to Proxmox: {e}")
-        proxmox_api = None
+    # Connect to Proxmox in background; retries with backoff if pve isn't up yet
+    asyncio.create_task(connect_proxmox_with_retry())
 
     # Start cleanup background task
     cleanup_task = asyncio.create_task(cleanup_loop(app.state.db))
@@ -442,11 +453,19 @@ def clone_vm(proxmox: ProxmoxAPI, session_id: str, vm_name: str) -> int:
     wait_for_task(proxmox, PROXMOX_NODE, upid, timeout=120)  # Linked clones are fast
     logger.info(f"Clone completed for VM {vmid}")
 
-    # Configure the cloned VM
+    # Configure the cloned VM. Build net0 from optional VLAN tag and MTU so that
+    # environments where the template's net0 needs a tag (VLAN-aware bridge) or a
+    # non-default MTU don't lose those parameters when this rewrite happens.
+    net0 = f"virtio,bridge={PROXMOX_BRIDGE}"
+    if PROXMOX_VLAN_TAG:
+        net0 += f",tag={PROXMOX_VLAN_TAG}"
+    if PROXMOX_MTU:
+        net0 += f",mtu={PROXMOX_MTU}"
+
     proxmox.nodes(PROXMOX_NODE).qemu(vmid).config.put(
         memory=VM_RAM_MB,
         cores=VM_VCPUS,
-        net0=f"virtio,bridge={PROXMOX_BRIDGE}",
+        net0=net0,
         description=f"Student lab VM - Session: {session_id}"
     )
 
@@ -1075,8 +1094,14 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
     """Provision a new VM for a student via Proxmox."""
     db = await get_db()
 
+    global proxmox_api
     if not proxmox_api:
-        raise HTTPException(status_code=503, detail="Proxmox not available")
+        try:
+            conn = get_proxmox_connection()
+            conn.version.get()
+            proxmox_api = conn
+        except Exception:
+            raise HTTPException(status_code=503, detail="Proxmox not available")
 
     # Generate session ID
     session_id = generate_session_id()
