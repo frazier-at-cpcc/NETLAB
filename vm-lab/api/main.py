@@ -204,6 +204,22 @@ def get_proxmox_connection() -> ProxmoxAPI:
         )
 
 
+async def connect_proxmox_with_retry():
+    global proxmox_api
+    delay = 10
+    while True:
+        try:
+            conn = get_proxmox_connection()
+            version = conn.version.get()
+            proxmox_api = conn
+            logger.info(f"Proxmox connected: {PROXMOX_HOST} (version {version.get('version', 'unknown')})")
+            return
+        except Exception as e:
+            logger.warning(f"Proxmox not reachable, retrying in {delay}s: {e}")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 120)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - setup and teardown."""
@@ -225,15 +241,8 @@ async def lifespan(app: FastAPI):
     docker_client = docker.from_env()
     logger.info("Docker client connected")
 
-    # Setup Proxmox connection
-    try:
-        proxmox_api = get_proxmox_connection()
-        # Test connection
-        version = proxmox_api.version.get()
-        logger.info(f"Proxmox connected: {PROXMOX_HOST} (version {version.get('version', 'unknown')})")
-    except Exception as e:
-        logger.error(f"Failed to connect to Proxmox: {e}")
-        proxmox_api = None
+    # Connect to Proxmox in background; retries with backoff if pve isn't up yet
+    asyncio.create_task(connect_proxmox_with_retry())
 
     # Start cleanup background task
     cleanup_task = asyncio.create_task(cleanup_loop(app.state.db))
@@ -1085,8 +1094,14 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
     """Provision a new VM for a student via Proxmox."""
     db = await get_db()
 
+    global proxmox_api
     if not proxmox_api:
-        raise HTTPException(status_code=503, detail="Proxmox not available")
+        try:
+            conn = get_proxmox_connection()
+            conn.version.get()
+            proxmox_api = conn
+        except Exception:
+            raise HTTPException(status_code=503, detail="Proxmox not available")
 
     # Generate session ID
     session_id = generate_session_id()
