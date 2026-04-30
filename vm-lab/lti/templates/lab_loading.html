@@ -277,11 +277,29 @@
                             </div>
                         </div>
 
-                        <!-- Primary Action -->
-                        <a href="#" id="open-terminal-btn" target="_blank"
-                           class="block w-full py-4 bg-gradient-to-r from-cpcc-primary to-cpcc-dark text-white font-bold text-center rounded-xl hover:shadow-lg hover:scale-[1.02] transition-all duration-200">
-                            Open Terminal
-                        </a>
+                        <!-- Primary Actions -->
+                        <div class="flex gap-3">
+                            <a href="#" id="open-terminal-btn"
+                               class="flex-1 py-4 bg-gradient-to-r from-cpcc-primary to-cpcc-dark text-white font-bold text-center rounded-xl hover:shadow-lg hover:scale-[1.02] transition-all duration-200 flex items-center justify-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <polyline points="4 17 10 11 4 5"/>
+                                    <line x1="12" y1="19" x2="20" y2="19"/>
+                                </svg>
+                                Terminal
+                            </a>
+                            <a href="#" id="open-console-btn"
+                               class="flex-1 py-4 bg-gradient-to-r from-blue-600 to-blue-800 text-white font-bold text-center rounded-xl hover:shadow-lg hover:scale-[1.02] transition-all duration-200 flex items-center justify-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                                    <line x1="8" y1="21" x2="16" y2="21"/>
+                                    <line x1="12" y1="17" x2="12" y2="21"/>
+                                </svg>
+                                Console
+                            </a>
+                        </div>
+                        <p class="text-xs text-center text-slate-500 mt-1">
+                            <strong>Terminal:</strong> SSH command line &nbsp;|&nbsp; <strong>Console:</strong> Graphical display (VNC/SPICE)
+                        </p>
 
                         <!-- Secondary Actions -->
                         <div class="flex gap-3">
@@ -565,7 +583,13 @@
 
             if (data.ready && data.url) {
                 showState('running');
+                // Terminal button - direct ttyd URL
                 document.getElementById('open-terminal-btn').href = data.url;
+                // Console button - unified session page with console tab
+                const consoleBtn = document.getElementById('open-console-btn');
+                if (consoleBtn) {
+                    consoleBtn.href = `/lti/session/${config.sessionId}/console`;
+                }
                 if (data.vm_ip) {
                     document.getElementById('vm-ip').textContent = data.vm_ip;
                     document.getElementById('vm-ip-row').style.display = 'flex';
@@ -749,6 +773,11 @@
             if (config.initialStatus === 'running') {
                 showState('running');
                 document.getElementById('open-terminal-btn').href = config.labUrl;
+                // Console button
+                const consoleBtn = document.getElementById('open-console-btn');
+                if (consoleBtn) {
+                    consoleBtn.href = `/lti/session/${config.sessionId}/console`;
+                }
                 // Poll once to get current status, but don't continuously poll
                 pollStatus();
             } else if (config.initialStatus === 'starting') {

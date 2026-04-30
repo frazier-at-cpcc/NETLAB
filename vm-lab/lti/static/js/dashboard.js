@@ -225,10 +225,29 @@ async function loadActiveSessions() {
                     Active
                 </span>
             </div>
-            <div class="space-y-1 text-sm">
+            <div class="space-y-1 text-sm mb-3">
                 <p class="text-slate-600"><span class="text-slate-400">VM:</span> ${escapeHtml(session.vm_ip || 'N/A')}</p>
                 <p class="text-slate-600"><span class="text-slate-400">Started:</span> ${formatDateTime(session.created_at)}</p>
                 <p class="text-slate-600"><span class="text-slate-400">Expires:</span> ${formatDateTime(session.expires_at)}</p>
+            </div>
+            <div class="flex gap-2">
+                <a href="${escapeHtml(session.url || '#')}" target="_blank"
+                   class="flex-1 px-3 py-1.5 bg-cpcc-primary text-white text-xs font-medium rounded-lg hover:bg-cpcc-dark transition text-center flex items-center justify-center gap-1">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <polyline points="4 17 10 11 4 5"/>
+                        <line x1="12" y1="19" x2="20" y2="19"/>
+                    </svg>
+                    Terminal
+                </a>
+                <button onclick="viewSessionConsole('${escapeHtml(session.session_id)}')"
+                   class="flex-1 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition text-center flex items-center justify-center gap-1">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                        <line x1="8" y1="21" x2="16" y2="21"/>
+                        <line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                    Console
+                </button>
             </div>
         </div>
     `).join('');
@@ -564,4 +583,45 @@ async function destroyDemoVM() {
         console.error('Error destroying demo VM:', error);
         alert('Failed to destroy demo VM: ' + error.message);
     }
+}
+
+// Console View Functions
+function viewSessionConsole(sessionId) {
+    // Open console viewer in a new window
+    const consoleUrl = `/lti/session/${sessionId}/console`;
+    window.open(consoleUrl, `console-${sessionId}`, 'width=1024,height=768,menubar=no,toolbar=no,location=no,status=no');
+}
+
+function openConsoleModal(sessionId) {
+    // Alternative: Open console in a modal
+    const modal = document.getElementById('console-modal');
+    const iframe = document.getElementById('console-iframe');
+
+    if (modal && iframe) {
+        iframe.src = `/lti/session/${sessionId}/console`;
+        modal.classList.remove('hidden');
+    } else {
+        // Fallback to new window
+        viewSessionConsole(sessionId);
+    }
+}
+
+function closeConsoleModal() {
+    const modal = document.getElementById('console-modal');
+    const iframe = document.getElementById('console-iframe');
+
+    if (modal) {
+        modal.classList.add('hidden');
+    }
+    if (iframe) {
+        iframe.src = 'about:blank';
+    }
+}
+
+function viewDemoVMConsole() {
+    if (!demoVMSessionId) {
+        alert('No active demo VM');
+        return;
+    }
+    viewSessionConsole(demoVMSessionId);
 }
