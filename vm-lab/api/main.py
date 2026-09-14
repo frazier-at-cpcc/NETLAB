@@ -32,8 +32,10 @@ from proxmoxer import ProxmoxAPI
 
 try:
     from cells import upsert_grade_cell
+    from tokens import assign_grade_token, get_passback_url, inject_guest_xapi_config
 except ImportError:
     from api.cells import upsert_grade_cell
+    from api.tokens import assign_grade_token, get_passback_url, inject_guest_xapi_config
 
 # Configure logging
 logging.basicConfig(
@@ -1194,6 +1196,8 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
         request.assignment_id, request.assignment_title, vm_name, vmid, url, expires_at
     )
 
+    grade_token = await assign_grade_token(db, session_id)
+
     logger.info(f"Provisioned VM {vm_name} (ID: {vmid}) on Proxmox")
 
     await log_event(db, session_id, 'provisioned', {
@@ -1335,6 +1339,18 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                         logger.warning(f"xAPI email configuration failed (continuing): {output[:200]}")
                 else:
                     logger.warning("No user email provided, skipping xAPI configuration")
+
+                await inject_guest_xapi_config(
+                    run_ssh_command,
+                    vm_ip=vm_ip,
+                    ssh_user=SSH_USER,
+                    ssh_password=SSH_PASSWORD,
+                    nested_user=NESTED_SSH_USER,
+                    nested_host=NESTED_SSH_HOST,
+                    token=grade_token,
+                    passback=get_passback_url(),
+                    session_id=session_id,
+                )
 
             # Create recording entry
             await create_recording_entry(
