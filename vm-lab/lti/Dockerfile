@@ -8,16 +8,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY requirements.txt .
+COPY lti/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY main.py .
-COPY lti13_config.json* ./
+# Copy application code (flat /app so uvicorn main:app still works)
+COPY lti/main.py .
+COPY lti/launch_context.py .
+COPY lti/persist_cell.py .
+COPY api/session_keys.py .
+COPY lti/lti13_config.json* ./
 
 # Copy templates and static files for instructor dashboard
-COPY templates/ ./templates/
-COPY static/ ./static/
+COPY lti/templates/ ./templates/
+COPY lti/static/ ./static/
 
 # Create directories for keys and config
 RUN mkdir -p /app/keys

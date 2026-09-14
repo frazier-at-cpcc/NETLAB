@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 
-from api.session_keys import course_session_key, extract_lab_slug
+try:
+    from api.session_keys import course_session_key, extract_lab_slug
+except ImportError:
+    from session_keys import course_session_key, extract_lab_slug
 
 
 @dataclass(frozen=True)

@@ -24,11 +24,16 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 import asyncpg
 import docker
 from proxmoxer import ProxmoxAPI
+
+try:
+    from cells import upsert_grade_cell
+except ImportError:
+    from api.cells import upsert_grade_cell
 
 # Configure logging
 logging.basicConfig(
@@ -103,6 +108,7 @@ TRAEFIK_DYNAMIC_DIR = os.getenv("TRAEFIK_DYNAMIC_DIR", "/app/traefik-dynamic")
 
 class ProvisionRequest(BaseModel):
     session_key: Optional[str] = None
+    course_session_key: Optional[str] = None
     user_id: Optional[str] = None
     user_email: Optional[str] = None
     user_name: Optional[str] = None
@@ -111,6 +117,15 @@ class ProvisionRequest(BaseModel):
     assignment_id: Optional[str] = None
     assignment_title: Optional[str] = None
     session_hours: Optional[int] = DEFAULT_SESSION_HOURS
+
+
+class GradeCellRequest(BaseModel):
+    course_session_id: str
+    lab_slug: Optional[str] = None
+    resource_link_id: Optional[str] = None
+    outcome_service_url: Optional[str] = None
+    sourcedid: Optional[str] = None
+    consumer_key: Optional[str] = None
 
 
 class Session(BaseModel):
@@ -902,7 +917,7 @@ async def health():
 
 @app.get("/api/session/by-key/{session_key:path}", response_model=Session)
 async def get_session_by_key(session_key: str):
-    """Find existing session by composite key."""
+    """Find existing session by course_session_key, then session_key."""
     db = await get_db()
 
     row = await db.fetchrow(
@@ -910,20 +925,53 @@ async def get_session_by_key(session_key: str):
         SELECT session_id, url, vm_ip, status, user_name, course_title,
                assignment_title, created_at, expires_at
         FROM vm_sessions
-        WHERE session_key = $1 AND status = 'running'
+        WHERE course_session_key = $1
+          AND status IN ('provisioning', 'starting', 'running')
         """,
         session_key
     )
+    if not row:
+        row = await db.fetchrow(
+            """
+            SELECT session_id, url, vm_ip, status, user_name, course_title,
+                   assignment_title, created_at, expires_at
+            FROM vm_sessions
+            WHERE session_key = $1
+              AND status IN ('provisioning', 'starting', 'running')
+            """,
+            session_key
+        )
 
     if not row:
         raise HTTPException(status_code=404, detail="Session not found")
 
     await db.execute(
-        "UPDATE vm_sessions SET last_accessed = CURRENT_TIMESTAMP WHERE session_key = $1",
-        session_key
+        "UPDATE vm_sessions SET last_accessed = CURRENT_TIMESTAMP WHERE session_id = $1",
+        row["session_id"]
     )
 
     return Session(**dict(row))
+
+
+@app.post("/api/cells")
+async def upsert_cell(body: GradeCellRequest):
+    """Persist or update a POX grade cell for a course session."""
+    if not body.lab_slug or not body.sourcedid:
+        return Response(status_code=204)
+
+    db = await get_db()
+    cell_id = await upsert_grade_cell(
+        db,
+        course_session_id=body.course_session_id,
+        lab_slug=body.lab_slug,
+        resource_link_id=body.resource_link_id or "",
+        outcome_service_url=body.outcome_service_url or "",
+        sourcedid=body.sourcedid,
+        consumer_key=body.consumer_key or "",
+    )
+    if cell_id is None:
+        return Response(status_code=204)
+    return {"id": cell_id}
 
 
 @app.get("/api/session/{session_id}", response_model=Session)
@@ -1130,16 +1178,18 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
         logger.error(f"Failed to clone VM: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create VM: {e}")
 
+    course_session_key = request.course_session_key or request.session_key
+
     # Create initial database record
     await db.execute(
         """
         INSERT INTO vm_sessions (
-            session_id, session_key, user_id, user_email, user_name,
+            session_id, session_key, course_session_key, user_id, user_email, user_name,
             course_id, course_title, assignment_id, assignment_title,
             vm_ip, vm_name, vm_id, url, status, expires_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, $10, $11, $12, 'starting', $13)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11, $12, $13, 'starting', $14)
         """,
-        session_id, request.session_key, request.user_id, request.user_email,
+        session_id, request.session_key, course_session_key, request.user_id, request.user_email,
         request.user_name, request.course_id, request.course_title,
         request.assignment_id, request.assignment_title, vm_name, vmid, url, expires_at
     )

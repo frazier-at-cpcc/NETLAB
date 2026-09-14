@@ -14,8 +14,16 @@ import secrets
 import json
 import logging
 from typing import Optional, Dict, Any
+from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+
+try:
+    from launch_context import parse_lti11_form
+    from persist_cell import persist_grade_cell
+except ImportError:
+    from lti.launch_context import parse_lti11_form
+    from lti.persist_cell import persist_grade_cell
 
 from fastapi import FastAPI, Request, HTTPException, Form, Depends
 from fastapi.responses import RedirectResponse, JSONResponse, Response, HTMLResponse
@@ -395,45 +403,32 @@ async def handle_lti11_launch(
             detail=f"Invalid LTI message type: {lti_message_type}"
         )
 
-    # Extract user information
-    user_id = form_data.get('user_id', '')
-    if not user_id:
-        raise HTTPException(status_code=400, detail="Missing user_id")
+    parsed = {str(k): ("" if v is None else str(v)) for k, v in form_data.items()}
+    try:
+        ctx = parse_lti11_form(parsed)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    user_email = form_data.get('lis_person_contact_email_primary', '')
-    user_name = form_data.get('lis_person_name_full') or \
-                form_data.get('lis_person_name_given', 'Student')
-    roles = form_data.get('roles', '')
-
-    # Course/context information
-    course_id = form_data.get('context_id', 'unknown')
-    course_title = form_data.get('context_title', 'Unknown Course')
-
-    # Resource link (assignment) information
-    resource_link_id = form_data.get('resource_link_id', 'default')
-    resource_link_title = form_data.get('resource_link_title', 'Lab Assignment')
-
-    # Tool consumer instance
-    tool_consumer_guid = form_data.get('tool_consumer_instance_guid', consumer_key)
-
-    # Create composite session key
-    session_key = f"{tool_consumer_guid}:{user_id}:{course_id}:{resource_link_id}"
+    session_key = ctx.course_session_key
+    user_name = ctx.user_name or "Student"
+    course_title = ctx.course_title or "Unknown Course"
+    resource_link_title = ctx.resource_link_title or "Lab Assignment"
 
     # Log the launch
     await log_launch(
         db,
         lti_version='1.1',
-        user_id=user_id,
+        user_id=ctx.user_id,
         session_key=session_key,
-        consumer_key=consumer_key,
-        user_email=user_email,
+        consumer_key=ctx.consumer_key,
+        user_email=ctx.user_email,
         user_name=user_name,
-        roles=roles,
-        course_id=course_id,
+        roles=ctx.roles,
+        course_id=ctx.course_id,
         course_title=course_title,
-        resource_link_id=resource_link_id,
+        resource_link_id=ctx.resource_link_id,
         resource_link_title=resource_link_title,
-        tool_consumer_guid=tool_consumer_guid,
+        tool_consumer_guid=ctx.tool_consumer_guid,
         client_ip=request.client.host if request.client else None,
         user_agent=request.headers.get('user-agent')
     )
@@ -442,14 +437,15 @@ async def handle_lti11_launch(
     return await provision_or_redirect(
         request=request,
         session_key=session_key,
-        user_id=user_id,
-        user_email=user_email,
+        user_id=ctx.user_id,
+        user_email=ctx.user_email,
         user_name=user_name,
-        course_id=course_id,
+        course_id=ctx.course_id,
         course_title=course_title,
-        assignment_id=resource_link_id,
+        assignment_id=ctx.resource_link_id,
         assignment_title=resource_link_title,
-        roles=roles
+        roles=ctx.roles,
+        ctx=ctx,
     )
 
 
@@ -729,6 +725,54 @@ async def handle_lti13_launch(
 # Shared Provisioning Logic
 # ============================================================================
 
+def store_launch_cell_fields(request: Request, ctx) -> None:
+    if ctx is None:
+        return
+    request.session['course_session_key'] = getattr(ctx, 'course_session_key', '') or ''
+    request.session['lab_slug'] = ctx.lab_slug or ''
+    request.session['sourcedid'] = ctx.sourcedid or ''
+    request.session['outcome_service_url'] = ctx.outcome_service_url or ''
+    request.session['consumer_key'] = ctx.consumer_key or ''
+    request.session['resource_link_id'] = ctx.resource_link_id or ''
+
+
+def cell_ctx_from_session(request: Request):
+    return SimpleNamespace(
+        lab_slug=request.session.get('lab_slug') or None,
+        sourcedid=request.session.get('sourcedid') or None,
+        outcome_service_url=request.session.get('outcome_service_url') or None,
+        resource_link_id=request.session.get('resource_link_id') or '',
+        consumer_key=request.session.get('consumer_key') or '',
+    )
+
+
+async def post_cell_to_lab_api(client: httpx.AsyncClient, body: dict) -> None:
+    try:
+        response = await client.post(f"{ORCHESTRATOR_API}/api/cells", json=body)
+        if response.status_code not in (200, 201, 204):
+            logger.warning(
+                "Grade cell persist failed for resource_link_id=%s status=%s",
+                body.get("resource_link_id"),
+                response.status_code,
+            )
+    except httpx.RequestError as e:
+        logger.warning(
+            "Grade cell persist error for resource_link_id=%s: %s",
+            body.get("resource_link_id"),
+            e,
+        )
+
+
+async def persist_cell_for_session(client: httpx.AsyncClient, session_id: str, ctx) -> None:
+    if ctx is None or not session_id:
+        return
+    await persist_grade_cell(
+        session_id,
+        ctx,
+        post=lambda body: post_cell_to_lab_api(client, body),
+    )
+
+
 async def provision_or_redirect(
     request: Request,
     session_key: str,
@@ -739,7 +783,8 @@ async def provision_or_redirect(
     course_title: str,
     assignment_id: str,
     assignment_title: str,
-    roles: str = ""
+    roles: str = "",
+    ctx=None,
 ) -> Response:
     """
     Check for existing VM session or provision a new one.
@@ -787,6 +832,7 @@ async def provision_or_redirect(
     request.session['course_title'] = course_title
     request.session['assignment_id'] = assignment_id
     request.session['assignment_title'] = assignment_title
+    store_launch_cell_fields(request, ctx)
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         # Check if user already has an active session
@@ -804,6 +850,7 @@ async def provision_or_redirect(
 
                 # Store the current session ID in cookie
                 request.session['current_session_id'] = session_id
+                await persist_cell_for_session(client, session_id, ctx)
 
                 # If session is fully running, show the control page (not direct redirect)
                 if session_status == 'running':
@@ -821,7 +868,7 @@ async def provision_or_redirect(
                     )
 
                 # If session is still starting, show the loading page
-                if session_status == 'starting':
+                if session_status in ('starting', 'provisioning'):
                     return templates.TemplateResponse(
                         "lab_loading.html",
                         {
@@ -1087,6 +1134,11 @@ async def provision_student_vm(request: Request):
 
     # Get values from body, falling back to session values if empty
     session_key = body.get('session_key') or request.session.get('session_key')
+    course_session_key = (
+        body.get('course_session_key')
+        or request.session.get('course_session_key')
+        or session_key
+    )
     user_id = body.get('user_id') or request.session.get('user_id')
     user_email = body.get('user_email') or request.session.get('user_email', '')
     user_name = body.get('user_name') or request.session.get('user_name', 'Student')
@@ -1106,6 +1158,7 @@ async def provision_student_vm(request: Request):
                 f"{ORCHESTRATOR_API}/api/provision",
                 json={
                     "session_key": session_key,
+                    "course_session_key": course_session_key,
                     "user_id": user_id,
                     "user_email": user_email,
                     "user_name": user_name,
@@ -1130,6 +1183,7 @@ async def provision_student_vm(request: Request):
 
             # Store the current session ID in cookie
             request.session['current_session_id'] = session_id
+            await persist_cell_for_session(client, session_id, cell_ctx_from_session(request))
 
             return JSONResponse(content={
                 "status": "starting",
@@ -1189,7 +1243,12 @@ async def recreate_student_session(request: Request, session_id: str):
             raise HTTPException(status_code=503, detail="Unable to fetch session info")
 
         # Extract session context from the original session
-        session_key = original_session.get('session_key', '')
+        session_key = original_session.get('session_key', '') or request.session.get('session_key', '')
+        course_session_key = (
+            original_session.get('course_session_key')
+            or request.session.get('course_session_key')
+            or session_key
+        )
         user_id = original_session.get('user_id', '')
         user_email = original_session.get('user_email', '')
         user_name = original_session.get('user_name', '')
@@ -1210,6 +1269,7 @@ async def recreate_student_session(request: Request, session_id: str):
                 f"{ORCHESTRATOR_API}/api/provision",
                 json={
                     "session_key": session_key,
+                    "course_session_key": course_session_key,
                     "user_id": user_id,
                     "user_email": user_email,
                     "user_name": user_name,
@@ -1230,6 +1290,7 @@ async def recreate_student_session(request: Request, session_id: str):
 
             # Update the session cookie with new session ID
             request.session['current_session_id'] = new_session_id
+            await persist_cell_for_session(client, new_session_id, cell_ctx_from_session(request))
 
             logger.info(f"Recreated session: old={session_id}, new={new_session_id}")
 

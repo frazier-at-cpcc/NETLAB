@@ -20,8 +20,8 @@ services:
   # LTI Tool Server - Handles LMS authentication (1.1 and 1.3)
   lti-server:
     build:
-      context: ./lti
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: lti/Dockerfile
     container_name: lti-server
     restart: unless-stopped
     environment:
