@@ -49,7 +49,27 @@ ORCHESTRATOR_API = os.getenv("ORCHESTRATOR_API", "http://lab-api:8000")
 DOMAIN = os.getenv("DOMAIN", "lab.yourdomain.com")
 LTI_BASE_URL = os.getenv("LTI_BASE_URL", "https://lti.yourdomain.com")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://lti:lti@localhost:5432/lti")
-SESSION_SECRET = os.getenv("SESSION_SECRET", secrets.token_hex(32))
+_RAW_SESSION_SECRET = os.getenv("SESSION_SECRET")
+if _RAW_SESSION_SECRET == "":
+    # docker-compose.yml declares `SESSION_SECRET=${SESSION_SECRET}`. When an
+    # operator has no SESSION_SECRET line in .env, compose does not omit the
+    # variable; it supplies it as an empty string, which is indistinguishable
+    # here from a deliberately-set empty secret. Falling back to a generated
+    # value in that case would sign the LTI 1.3 session cookie with a
+    # per-process secret: sessions would not survive a restart and would
+    # never agree across replicas once this sits behind the broker, and the
+    # operator would have no signal that anything was misconfigured. Refuse
+    # to start instead, matching how an empty LTI11_* consumer secret or an
+    # unset LAB_API_SERVICE_TOKEN already fail closed rather than silently.
+    raise RuntimeError(
+        "SESSION_SECRET is set but empty. docker-compose.yml supplies an "
+        "empty string (not an absent variable) when SESSION_SECRET is "
+        "missing from .env. Set SESSION_SECRET in .env (openssl rand -hex "
+        "32) before starting this service."
+    )
+# A genuinely absent SESSION_SECRET (no docker-compose involved) is
+# unambiguous: generate a per-process secret so local/bare runs still work.
+SESSION_SECRET = _RAW_SESSION_SECRET or secrets.token_hex(32)
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/1")
 
 # Redis client for token storage (shared between workers)
