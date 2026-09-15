@@ -167,6 +167,55 @@ def test_a_mixed_batch_keeps_only_the_eligible_statement():
     assert out[0]["stored"] == "2026-09-14T02:25:07.229000000Z"
 
 
+# --- security boundary: stored decides, timestamp never does ----------
+#
+# `stored` is assigned by the record store itself when a statement is
+# received. `timestamp` is supplied by the poster. The write credential
+# for this store lives on student machines, so a student can set
+# `timestamp` to whatever value would help a forged statement slip past
+# the cutoff, but cannot touch `stored`. Every test above omits
+# `timestamp` entirely, which would let a silent `stored`-or-`timestamp`
+# fallback pass unnoticed. These three populate both fields and make them
+# disagree, so that if `timestamp` were ever consulted, one of them would
+# go red.
+
+
+def test_a_backdated_timestamp_does_not_rescue_a_late_forgery():
+    """The forgery shape: posted after the cutoff, backdated by the client.
+
+    `stored` is real and after the cutoff; `timestamp` is forged and well
+    before it. The statement must be dropped. A fallback or preference
+    that reaches for `timestamp` here would keep it instead.
+    """
+    s = _stmt(stored="2026-09-16T00:00:00.000000000Z")
+    s["timestamp"] = "2020-01-01T00:00:00.000000000Z"
+    assert graded_lesson_statements({"statements": [s]}, "cli-review", CUTOFF) == []
+
+
+def test_a_future_timestamp_does_not_hide_legitimate_old_work():
+    """The inverse mistake: real old work behind a skewed client clock.
+
+    `stored` is real and before the cutoff; `timestamp` is client-supplied
+    and after it. The statement must be kept. A mistake that prefers
+    `timestamp` outright would drop it instead.
+    """
+    s = _stmt(stored="2026-09-14T02:25:07.229000000Z")
+    s["timestamp"] = "2030-01-01T00:00:00.000000000Z"
+    assert len(graded_lesson_statements({"statements": [s]}, "cli-review", CUTOFF)) == 1
+
+
+def test_an_unparseable_timestamp_is_never_even_inspected():
+    """Proves the code does not read `timestamp` at all, not even to validate it.
+
+    `stored` is valid and before the cutoff, so the statement must be kept
+    no matter what garbage `timestamp` carries. If the code ever touched
+    `timestamp`, a value this broken would raise or force a drop.
+    """
+    s = _stmt(stored="2026-09-14T02:25:07.229000000Z")
+    s["timestamp"] = "not-a-date-at-all"
+    assert len(graded_lesson_statements({"statements": [s]}, "cli-review", CUTOFF)) == 1
+
+
 # --- fetch_statements ----------------------------------------------------
 
 

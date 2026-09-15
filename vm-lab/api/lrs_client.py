@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 LESSON_TYPE = "http://adlnet.gov/expapi/activities/lesson"
 ACTIVITY_PREFIX = "https://training.redhat.com/labs/"
 
-_STATEMENT_ERRORS = (AttributeError, TypeError, ValueError, KeyError)
+_STATEMENT_ERRORS = (AttributeError, TypeError, ValueError)
 
 
 def parse_stored(value: str) -> datetime:
