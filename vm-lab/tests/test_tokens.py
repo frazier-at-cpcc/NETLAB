@@ -1,5 +1,10 @@
 import asyncio
+import json
 import logging
+import os
+import stat
+import subprocess
+import sys
 
 import pytest
 
@@ -95,7 +100,7 @@ def test_nested_xapi_config_command_quotes_token_and_claims_provision():
     token = "abc_TOKEN-1"
     cmd = nested_xapi_config_command("student", "workstation", "token", token)
     assert "LAB_XAPI_PROVISION=1 lab xapi-config token --provision" in cmd
-    assert f"'\\''{token}'\\''" in cmd
+    assert f"--provision {token}" in cmd
     assert cmd.startswith(
         "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null student@workstation "
     )
@@ -186,7 +191,106 @@ def test_injection_claims_provisioner_authority():
 
     assert "LAB_XAPI_PROVISION=1" in cmd
     assert "--provision" in cmd
-    assert "'s3cr3t'" in cmd
+    assert "--provision s3cr3t" in cmd
+
+
+# --- Execution-based quoting verification ---------------------------------
+#
+# nested_xapi_config_command's string is interpreted by TWO real shells
+# before it reaches `lab`, not one: the outer virtual machine's login shell
+# (invoked by its sshd to run the string this test's `sh -c` call stands in
+# for), and then the nested guest's login shell (invoked by ITS sshd to run
+# the embedded `ssh ... 'bash -lc ...'` call, once the outer shell has
+# stripped its layer of quoting). A prior version of this command wrapped
+# the value in single quotes that lived INSIDE a double-quoted `bash -lc
+# "..."` argument -- double quotes do not neutralize `$( )`, backticks, or
+# `$VAR`, so the nested guest's shell expanded them before `bash -lc` ever
+# ran, and a value containing a single quote broke the command outright.
+# Pattern-matching substrings cannot catch that; only actually executing the
+# string through both shell layers can. The `ssh` shim below stands in for
+# hop two by taking its last argv element (the remote command string ssh
+# would have sent verbatim) and running it through a fresh `sh -c`, exactly
+# as a real sshd invokes the remote user's login shell.
+
+_SSH_SHIM = f"""#!{sys.executable}
+import subprocess
+import sys
+
+subprocess.run(["sh", "-c", sys.argv[-1]])
+"""
+
+_LAB_SHIM = f"""#!{sys.executable}
+import json
+import os
+import sys
+
+with open(os.environ["LAB_SHIM_OUTPUT"], "w") as f:
+    json.dump(
+        {{
+            "argv": sys.argv[1:],
+            "provision_env": os.environ.get("LAB_XAPI_PROVISION"),
+        }},
+        f,
+    )
+"""
+
+
+def _write_shim(path, content):
+    path.write_text(content)
+    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _run_command_for_real(cmd, tmp_path):
+    """Execute a generated command string through two real shell re-parses
+    (the outer VM hop, then the nested guest hop) with `ssh` and `lab`
+    replaced by shims, and return what the `lab` shim actually received.
+    """
+    ssh_shim = tmp_path / "ssh"
+    lab_shim = tmp_path / "lab"
+    _write_shim(ssh_shim, _SSH_SHIM)
+    _write_shim(lab_shim, _LAB_SHIM)
+
+    output_file = tmp_path / "lab_received.json"
+    env = dict(os.environ)
+    env["PATH"] = f"{tmp_path}{os.pathsep}{env.get('PATH', '')}"
+    env["LAB_SHIM_OUTPUT"] = str(output_file)
+    env.pop("LAB_XAPI_PROVISION", None)
+
+    result = subprocess.run(
+        ["sh", "-c", cmd],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    if not output_file.exists():
+        raise AssertionError(
+            "lab shim never ran (command likely broke mid-parse):\n"
+            f"generated cmd: {cmd}\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+    return json.loads(output_file.read_text())
+
+
+ADVERSARIAL_VALUES = [
+    pytest.param("s3cr3t-token-value", id="plain_token"),
+    pytest.param("$(id)", id="command_substitution"),
+    pytest.param("`id`", id="backtick_substitution"),
+    pytest.param("$HOME", id="variable_expansion"),
+    pytest.param("it's a token", id="embedded_single_quote"),
+    pytest.param("hello * world", id="space_and_glob"),
+]
+
+
+@pytest.mark.parametrize("value", ADVERSARIAL_VALUES)
+def test_nested_xapi_config_command_survives_real_shell_layers(value, tmp_path):
+    cmd = nested_xapi_config_command("student", "workstation", "token", value)
+
+    received = _run_command_for_real(cmd, tmp_path)
+
+    assert received["argv"] == ["xapi-config", "token", "--provision", value]
+    assert received["provision_env"] == "1"
 
 
 def test_inject_success_logs_session_id_not_token(caplog):

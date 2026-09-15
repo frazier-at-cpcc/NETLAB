@@ -2,6 +2,7 @@ import hashlib
 import logging
 import os
 import secrets
+import shlex
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +43,14 @@ def redact_secret(text: str, secret: str) -> str:
 def nested_xapi_config_command(
     nested_user: str, nested_host: str, key: str, value: str
 ) -> str:
+    inner = (
+        f"LAB_XAPI_PROVISION=1 lab xapi-config {key} "
+        f"--provision {shlex.quote(value)}"
+    )
+    remote = f"bash -lc {shlex.quote(inner)}"
     return (
         "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-        f"{nested_user}@{nested_host} "
-        "'bash -lc \"LAB_XAPI_PROVISION=1 lab xapi-config "
-        f"{key} --provision '\\''{value}'\\''\"'"
+        f"{nested_user}@{nested_host} {shlex.quote(remote)}"
     )
 
 
