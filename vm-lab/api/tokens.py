@@ -45,7 +45,8 @@ def nested_xapi_config_command(
     return (
         "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
         f"{nested_user}@{nested_host} "
-        f"'bash -lc \"lab xapi-config {key} '\\''{value}'\\''\"'"
+        "'bash -lc \"LAB_XAPI_PROVISION=1 lab xapi-config "
+        f"{key} --provision '\\''{value}'\\''\"'"
     )
 
 

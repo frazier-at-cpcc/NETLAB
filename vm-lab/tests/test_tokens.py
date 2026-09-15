@@ -91,11 +91,10 @@ def test_assign_logs_session_id_not_token(caplog):
     assert token not in text
 
 
-def test_nested_xapi_config_command_quotes_token_and_omits_provision():
+def test_nested_xapi_config_command_quotes_token_and_claims_provision():
     token = "abc_TOKEN-1"
     cmd = nested_xapi_config_command("student", "workstation", "token", token)
-    assert "lab xapi-config token" in cmd
-    assert "--provision" not in cmd
+    assert "LAB_XAPI_PROVISION=1 lab xapi-config token --provision" in cmd
     assert f"'\\''{token}'\\''" in cmd
     assert cmd.startswith(
         "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null student@workstation "
@@ -135,9 +134,12 @@ def test_inject_failure_warns_without_token_or_destroy(caplog):
     assert "lab xapi-config passback" in commands[1]
     assert "lab xapi-config session-id" in commands[2]
     assert "sess-zz" in commands[2]
-    assert "--provision" not in commands[0]
-    assert "--provision" not in commands[1]
-    assert "--provision" not in commands[2]
+    assert "--provision" in commands[0]
+    assert "--provision" in commands[1]
+    assert "--provision" in commands[2]
+    assert "LAB_XAPI_PROVISION=1" in commands[0]
+    assert "LAB_XAPI_PROVISION=1" in commands[1]
+    assert "LAB_XAPI_PROVISION=1" in commands[2]
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "sess-zz" in text
     assert token not in text
@@ -175,6 +177,16 @@ def test_run_ssh_timeout_does_not_log_token_or_password(caplog, monkeypatch):
     assert password not in combined
     assert command not in combined
     assert "SSH command failed" in text
+
+
+def test_injection_claims_provisioner_authority():
+    from api.tokens import nested_xapi_config_command
+
+    cmd = nested_xapi_config_command("student", "workstation", "token", "s3cr3t")
+
+    assert "LAB_XAPI_PROVISION=1" in cmd
+    assert "--provision" in cmd
+    assert "'s3cr3t'" in cmd
 
 
 def test_inject_success_logs_session_id_not_token(caplog):
