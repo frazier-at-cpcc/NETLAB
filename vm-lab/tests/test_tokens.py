@@ -130,11 +130,14 @@ def test_inject_failure_warns_without_token_or_destroy(caplog):
             )
         )
 
-    assert len(commands) == 2
+    assert len(commands) == 3
     assert "lab xapi-config token" in commands[0]
     assert "lab xapi-config passback" in commands[1]
+    assert "lab xapi-config session-id" in commands[2]
+    assert "sess-zz" in commands[2]
     assert "--provision" not in commands[0]
     assert "--provision" not in commands[1]
+    assert "--provision" not in commands[2]
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "sess-zz" in text
     assert token not in text
@@ -176,8 +179,10 @@ def test_run_ssh_timeout_does_not_log_token_or_password(caplog, monkeypatch):
 
 def test_inject_success_logs_session_id_not_token(caplog):
     token = "super-secret-token-value"
+    commands = []
 
     async def run_ssh(ip, user, password, command, timeout=60):
+        commands.append(command)
         return True, f"configured {command}"
 
     with caplog.at_level(logging.INFO):
@@ -199,3 +204,5 @@ def test_inject_success_logs_session_id_not_token(caplog):
     assert "sess-zz" in text
     assert token not in text
     assert "WARNING" not in [r.levelname for r in caplog.records]
+    assert any("lab xapi-config session-id" in cmd and "sess-zz" in cmd for cmd in commands)
+    assert token not in "".join(commands[2:])

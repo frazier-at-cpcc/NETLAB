@@ -75,6 +75,7 @@ async def inject_guest_xapi_config(
     specs = (
         ("token", token),
         ("passback", passback),
+        ("session-id", session_id),
     )
     for key, value in specs:
         cmd = nested_xapi_config_command(nested_user, nested_host, key, value)
