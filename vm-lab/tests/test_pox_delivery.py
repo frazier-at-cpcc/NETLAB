@@ -19,6 +19,8 @@ SUCCESS_ENVELOPE = (
     "</imsx_statusInfo></imsx_POXResponseHeaderInfo></imsx_POXHeader>"
     "</imsx_POXEnvelopeResponse>"
 )
+FAILURE_ENVELOPE = SUCCESS_ENVELOPE.replace("success", "failure")
+PROCESSING_ENVELOPE = SUCCESS_ENVELOPE.replace("success", "processing")
 
 
 class _AsyncCM:
@@ -292,3 +294,66 @@ def test_pox_status_reads_the_code_major():
     assert pox_status(ok) == "success"
     assert pox_status(ok.replace("success", "failure")) == "failure"
     assert pox_status("") == "malformed"
+
+
+def test_pox_success_envelope_marks_delivered_with_no_error():
+    db = DeliveryStubPool()
+    db.add_due()
+    http = FakeHttp(200, text=SUCCESS_ENVELOPE)
+
+    _deliver(db, http)
+
+    delivery = db.deliveries[0]
+    assert delivery["state"] == "DELIVERED"
+    assert delivery["delivered_at"] == NOW
+    assert delivery["last_error"] is None
+    assert delivery["attempts"] == 1
+
+
+def test_pox_failure_envelope_marks_dead_letter_naming_the_rejection():
+    db = DeliveryStubPool()
+    db.add_due()
+    http = FakeHttp(200, text=FAILURE_ENVELOPE)
+
+    _deliver(db, http)
+
+    delivery = db.deliveries[0]
+    assert delivery["state"] == "DEAD_LETTER"
+    assert delivery["last_error"]
+    assert "failure" in delivery["last_error"]
+    assert SOURCEDID not in str(delivery["last_error"])
+    assert delivery["attempts"] == 1
+
+
+def test_pox_processing_envelope_marks_retrying_with_future_attempt():
+    db = DeliveryStubPool()
+    db.add_due()
+    http = FakeHttp(200, text=PROCESSING_ENVELOPE)
+    rng = FrozenRNG(1.5)
+
+    _deliver(db, http, rng=rng)
+
+    delivery = db.deliveries[0]
+    assert delivery["state"] == "RETRYING"
+    assert delivery["next_attempt_at"] > NOW
+    assert delivery["last_error"]
+    assert "processing" in delivery["last_error"]
+    assert delivery["attempts"] == 1
+
+
+def test_pox_unparseable_body_marks_retrying_not_delivered_or_dead_letter():
+    db = DeliveryStubPool()
+    db.add_due()
+    http = FakeHttp(200, text="")
+    rng = FrozenRNG(1.5)
+
+    _deliver(db, http, rng=rng)
+
+    delivery = db.deliveries[0]
+    assert delivery["state"] == "RETRYING"
+    assert delivery["state"] != "DELIVERED"
+    assert delivery["state"] != "DEAD_LETTER"
+    assert delivery["next_attempt_at"] > NOW
+    assert delivery["last_error"]
+    assert "malformed" in delivery["last_error"]
+    assert delivery["attempts"] == 1
