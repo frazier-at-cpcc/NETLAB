@@ -14,6 +14,7 @@ import secrets
 import string
 import logging
 import asyncio
+import base64
 import json
 import re
 import ipaddress
@@ -21,7 +22,9 @@ from typing import Optional, List
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import MappingProxyType
 
+import httpx
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, Response, JSONResponse
@@ -31,6 +34,7 @@ import docker
 from proxmoxer import ProxmoxAPI
 
 try:
+    from backfill import attempt_backfill
     from cells import upsert_grade_cell
     from grades import (
         GradeRequest,
@@ -42,6 +46,7 @@ try:
         map_grade_http,
         parse_since,
     )
+    from lrs_client import parse_stored
     from pox_delivery import pox_delivery_loop
     from service_auth import SERVICE_TOKEN_HEADER, ServiceTokenError, check_service_token, service_token
     from ssh import run_ssh_command
@@ -52,6 +57,7 @@ try:
         nested_xapi_email_command,
     )
 except ImportError:
+    from api.backfill import attempt_backfill
     from api.cells import upsert_grade_cell
     from api.grades import (
         GradeRequest,
@@ -63,6 +69,7 @@ except ImportError:
         map_grade_http,
         parse_since,
     )
+    from api.lrs_client import parse_stored
     from api.pox_delivery import pox_delivery_loop
     from api.service_auth import SERVICE_TOKEN_HEADER, ServiceTokenError, check_service_token, service_token
     from api.ssh import run_ssh_command
@@ -138,6 +145,90 @@ DOCKER_NETWORK = "vm-lab_lab-network"
 
 # Traefik dynamic config directory for session routes
 TRAEFIK_DYNAMIC_DIR = os.getenv("TRAEFIK_DYNAMIC_DIR", "/app/traefik-dynamic")
+
+
+# ============================================================================
+# LRS grade backfill configuration
+#
+# Disabled by default. Every gap in configuration fails the feature off,
+# never open, and is logged once at startup so an operator can see why
+# without ever seeing the value of anything sensitive. See
+# docs/superpowers/specs/2026-09-15-lrs-grade-backfill.md sections 3 and 9.
+# ============================================================================
+
+_LRS_BACKFILL_TRUTHY = {"1", "true", "yes"}
+
+_LRS_BACKFILL_DEFAULT_DOMAINS = (
+    "email.cpcc.edu,lab.cpcc.edu,email.edu.cpcc,cpcc.email.edu,cpcc.edu"
+)
+
+
+def _encode_lrs_read_auth(raw: str) -> str:
+    """Return the base64 HTTP Basic credential attempt_backfill hands to
+    fetch_statements, which sends it verbatim as
+    'Authorization: Basic {auth}'.
+
+    An operator may paste in either form: a raw `key:secret` pair copied
+    straight off the store's credential page, or the credential already
+    base64-encoded. A colon never appears in valid base64 output, so a
+    value containing ':' is treated as raw and encoded here; a value with
+    no colon is assumed to already be base64 and passed through
+    unchanged. The raw value is never logged.
+    """
+    if ":" in raw:
+        return base64.b64encode(raw.encode("utf-8")).decode("ascii")
+    return raw
+
+
+def load_backfill_config():
+    """Read the LRS grade backfill configuration from the environment.
+
+    Returns a frozen mapping carrying exactly the five keys
+    api/backfill.py's attempt_backfill reads via config.get(): enabled,
+    domains, cutoff, base_url, auth. A missing or unparseable
+    LRS_READ_AUTH or LRS_BACKFILL_CUTOFF forces enabled to False
+    regardless of LRS_BACKFILL_ENABLED, and is logged once here, naming
+    only which variable is missing or invalid, never its value.
+    """
+    enabled_flag = os.getenv("LRS_BACKFILL_ENABLED", "false").strip().lower() in _LRS_BACKFILL_TRUTHY
+
+    base_url = os.getenv("LRS_READ_URL", "https://lrs.labsconnect.org/xapi")
+
+    raw_auth = os.getenv("LRS_READ_AUTH", "")
+    if not raw_auth:
+        logger.warning("LRS backfill disabled: LRS_READ_AUTH is not set")
+        auth = ""
+    else:
+        auth = _encode_lrs_read_auth(raw_auth)
+
+    raw_cutoff = os.getenv("LRS_BACKFILL_CUTOFF", "")
+    cutoff = None
+    if not raw_cutoff:
+        logger.warning("LRS backfill disabled: LRS_BACKFILL_CUTOFF is not set")
+    else:
+        try:
+            cutoff = parse_stored(raw_cutoff)
+        except (ValueError, TypeError):
+            logger.warning("LRS backfill disabled: LRS_BACKFILL_CUTOFF is not a valid ISO instant")
+            cutoff = None
+
+    domains_raw = os.getenv("LRS_BACKFILL_DOMAINS", _LRS_BACKFILL_DEFAULT_DOMAINS)
+    domains = [d.strip() for d in domains_raw.split(",") if d.strip()]
+
+    enabled = enabled_flag and bool(auth) and cutoff is not None
+
+    return MappingProxyType(
+        {
+            "enabled": enabled,
+            "domains": domains,
+            "cutoff": cutoff,
+            "base_url": base_url,
+            "auth": auth,
+        }
+    )
+
+
+BACKFILL_CONFIG = load_backfill_config()
 
 
 # ============================================================================
@@ -1009,8 +1100,39 @@ async def require_service_token(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
+async def _run_lrs_backfill(cell_id: int) -> None:
+    """Background-task entry point for the LRS grade backfill.
+
+    Scheduled from POST /api/cells only after a successful upsert, and
+    only when the backfill feature is fully configured. It is never
+    awaited inline: that request path is latency-sensitive, with a
+    student waiting on a virtual machine, and a slow or unreachable
+    Learning Record Store must not delay it. This function runs after the
+    response has already been sent, so any exception here -- a network
+    error, a database error, anything -- is caught and logged rather than
+    left to propagate; it cannot affect a response the caller has already
+    received.
+    """
+    db = await get_db()
+    http = httpx.AsyncClient(timeout=10.0)
+    try:
+        await attempt_backfill(db, http, cell_id, config=BACKFILL_CONFIG)
+    except Exception:
+        # No exc_info and no exception text here, matching
+        # attempt_backfill's own discipline: an underlying httpx error can
+        # carry the request URL, and this request's query string carries
+        # the student's candidate mailboxes. Only the cell id is logged.
+        logger.warning(
+            "LRS backfill background task failed for cell_id=%s; the cell "
+            "remains unmarked and is retried on the student's next launch",
+            cell_id,
+        )
+    finally:
+        await http.aclose()
+
+
 @app.post("/api/cells", dependencies=[Depends(require_service_token)])
-async def upsert_cell(body: GradeCellRequest):
+async def upsert_cell(body: GradeCellRequest, background_tasks: BackgroundTasks):
     """Persist or update a POX grade cell for a course session."""
     if not body.lab_slug or not body.sourcedid:
         return Response(status_code=204)
@@ -1027,6 +1149,10 @@ async def upsert_cell(body: GradeCellRequest):
     )
     if cell_id is None:
         return Response(status_code=204)
+
+    if BACKFILL_CONFIG.get("enabled", False):
+        background_tasks.add_task(_run_lrs_backfill, cell_id)
+
     return {"id": cell_id}
 
 

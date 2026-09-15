@@ -98,6 +98,12 @@ services:
       - SSH_USER=${SSH_USER:-kiosk}
       - RECORDINGS_DIR=/var/lib/vm-lab/recordings
       - LAB_API_SERVICE_TOKEN=${LAB_API_SERVICE_TOKEN}
+      # LRS grade backfill (disabled by default; see .env.example)
+      - LRS_BACKFILL_ENABLED=${LRS_BACKFILL_ENABLED:-false}
+      - LRS_READ_URL=${LRS_READ_URL:-https://lrs.labsconnect.org/xapi}
+      - LRS_READ_AUTH=${LRS_READ_AUTH:-}
+      - LRS_BACKFILL_CUTOFF=${LRS_BACKFILL_CUTOFF:-}
+      - LRS_BACKFILL_DOMAINS=${LRS_BACKFILL_DOMAINS:-email.cpcc.edu,lab.cpcc.edu,email.edu.cpcc,cpcc.email.edu,cpcc.edu}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./lti/keys:/app/keys:ro
