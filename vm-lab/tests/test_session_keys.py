@@ -13,3 +13,17 @@ def test_extract_lab_slug_from_lti11_custom_param():
 
 def test_extract_lab_slug_missing_returns_none():
     assert extract_lab_slug({"resource_link_title": "Lab: cli-review"}) is None
+
+
+def test_broker_resource_parameter_names_the_slug():
+    from api.session_keys import extract_lab_slug
+
+    assert extract_lab_slug({"custom_resource": "cli-review"}) == "cli-review"
+
+
+def test_lab_slug_still_wins_over_resource():
+    from api.session_keys import extract_lab_slug
+
+    form = {"custom_lab_slug": "files-review", "custom_resource": "cli-review"}
+
+    assert extract_lab_slug(form) == "files-review"
