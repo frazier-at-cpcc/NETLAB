@@ -219,6 +219,89 @@ def test_already_encoded_credential_is_passed_through_unchanged(monkeypatch, loa
     assert lab_api_main.BACKFILL_CONFIG["auth"] == already_encoded
 
 
+def test_already_encoded_credential_with_trailing_newline_has_no_newline_in_auth(monkeypatch, load_api_main):
+    """echo "secret" > file, Kubernetes secretKeyRef mounts, and several
+    .env tools all routinely append a trailing newline. Since this value
+    has no colon, it takes the pass-through branch; the newline must be
+    stripped before it ever becomes the header value, or
+    'Authorization: Basic <token>\\n' goes out on the wire."""
+    already_encoded = base64.b64encode(b"readonly-key:readonly-secret").decode("ascii")
+    monkeypatch.setenv("LRS_BACKFILL_ENABLED", "true")
+    monkeypatch.setenv("LRS_READ_AUTH", already_encoded + "\n")
+    monkeypatch.setenv("LRS_BACKFILL_CUTOFF", "2026-09-15T00:00:00Z")
+
+    lab_api_main = load_api_main()
+
+    assert lab_api_main.BACKFILL_CONFIG["auth"] == already_encoded
+    assert "\n" not in lab_api_main.BACKFILL_CONFIG["auth"]
+
+
+def test_raw_credential_with_trailing_newline_encodes_identically_to_without(monkeypatch, load_api_main):
+    """A raw key:secret pair does contain a colon, so an unstripped
+    newline is swallowed into the base64 input and produces a different
+    encoded value than the same pair without the newline -- a silent
+    wrong-credential bug, not a missing one. Assert the two loads produce
+    the identical auth value, not a hardcoded literal, so the test states
+    the property being protected rather than one example of it."""
+    monkeypatch.setenv("LRS_BACKFILL_ENABLED", "true")
+    monkeypatch.setenv("LRS_BACKFILL_CUTOFF", "2026-09-15T00:00:00Z")
+
+    monkeypatch.setenv("LRS_READ_AUTH", "readonly-key:readonly-secret")
+    without_newline = load_api_main().BACKFILL_CONFIG["auth"]
+
+    monkeypatch.setenv("LRS_READ_AUTH", "readonly-key:readonly-secret\n")
+    with_newline = load_api_main().BACKFILL_CONFIG["auth"]
+
+    assert with_newline == without_newline
+
+
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        "readonly-key:readonly-secret\n",
+        "\nreadonly-key:readonly-secret",
+        "  readonly-key:readonly-secret  ",
+        "\t readonly-key:readonly-secret \t\n",
+    ],
+)
+def test_credential_with_leading_and_surrounding_whitespace_encodes_identically_to_bare(
+    monkeypatch, load_api_main, wrapped
+):
+    monkeypatch.setenv("LRS_BACKFILL_ENABLED", "true")
+    monkeypatch.setenv("LRS_BACKFILL_CUTOFF", "2026-09-15T00:00:00Z")
+
+    monkeypatch.setenv("LRS_READ_AUTH", "readonly-key:readonly-secret")
+    bare = load_api_main().BACKFILL_CONFIG["auth"]
+
+    monkeypatch.setenv("LRS_READ_AUTH", wrapped)
+    surrounded = load_api_main().BACKFILL_CONFIG["auth"]
+
+    assert surrounded == bare
+
+
+def test_read_url_with_trailing_newline_is_stripped(monkeypatch, load_api_main):
+    """A trailing newline on LRS_READ_URL would otherwise become part of
+    the URL fetch_statements builds, producing a malformed request."""
+    monkeypatch.setenv("LRS_READ_URL", "https://lrs.internal.example/xapi\n")
+
+    lab_api_main = load_api_main()
+
+    assert lab_api_main.load_backfill_config()["base_url"] == "https://lrs.internal.example/xapi"
+
+
+def test_domains_with_spaces_after_commas_match_domains_without(monkeypatch, load_api_main):
+    """States the property directly: two differently-whitespaced
+    spellings of the same domain list must parse identically, rather
+    than asserting one literal result."""
+    monkeypatch.setenv("LRS_BACKFILL_DOMAINS", "a.edu,b.edu,c.edu")
+    compact = load_api_main().load_backfill_config()["domains"]
+
+    monkeypatch.setenv("LRS_BACKFILL_DOMAINS", "a.edu, b.edu, c.edu")
+    spaced = load_api_main().load_backfill_config()["domains"]
+
+    assert spaced == compact
+
+
 def test_credential_value_never_appears_in_startup_logs(monkeypatch, load_api_main, caplog):
     monkeypatch.setenv("LRS_BACKFILL_ENABLED", "true")
     monkeypatch.setenv("LRS_READ_AUTH", "readonly-key:super-secret-value")

@@ -174,6 +174,12 @@ def _encode_lrs_read_auth(raw: str) -> str:
     value containing ':' is treated as raw and encoded here; a value with
     no colon is assumed to already be base64 and passed through
     unchanged. The raw value is never logged.
+
+    Callers must strip surrounding whitespace before calling this. A
+    trailing newline on a raw pair would otherwise become part of the
+    base64 input, silently encoding a different credential; a trailing
+    newline on an already-encoded value would otherwise survive
+    unchanged into the Authorization header.
     """
     if ":" in raw:
         return base64.b64encode(raw.encode("utf-8")).decode("ascii")
@@ -192,9 +198,18 @@ def load_backfill_config():
     """
     enabled_flag = os.getenv("LRS_BACKFILL_ENABLED", "false").strip().lower() in _LRS_BACKFILL_TRUTHY
 
-    base_url = os.getenv("LRS_READ_URL", "https://lrs.labsconnect.org/xapi")
+    # Every raw string pulled from the environment is stripped before it is
+    # inspected or used, matching lrs_client.parse_stored's own internal
+    # strip. A trailing newline is routine, not contrived: `echo x > file`,
+    # a Kubernetes secretKeyRef mount, and several .env tools all append
+    # one. Left unstripped, it survives into an already-encoded credential
+    # as literal header bytes, or gets folded into a raw credential's own
+    # base64 encoding, in both cases producing a wrong value that is still
+    # non-empty and still looks configured, so the feature stays "enabled"
+    # and fails every store query with no visible cause.
+    base_url = os.getenv("LRS_READ_URL", "https://lrs.labsconnect.org/xapi").strip()
 
-    raw_auth = os.getenv("LRS_READ_AUTH", "")
+    raw_auth = os.getenv("LRS_READ_AUTH", "").strip()
     if not raw_auth:
         logger.warning("LRS backfill disabled: LRS_READ_AUTH is not set")
         auth = ""
