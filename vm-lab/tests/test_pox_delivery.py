@@ -357,3 +357,11 @@ def test_pox_unparseable_body_marks_retrying_not_delivered_or_dead_letter():
     assert delivery["last_error"]
     assert "malformed" in delivery["last_error"]
     assert delivery["attempts"] == 1
+
+
+def test_broker_consumer_secret_is_loaded():
+    from api.pox_delivery import load_lti11_secrets
+
+    secrets = load_lti11_secrets({"LTI11_LTIBROKER_SECRET": "shared"})
+
+    assert secrets["ltibroker"] == "shared"

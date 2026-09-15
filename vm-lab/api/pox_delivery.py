@@ -21,6 +21,7 @@ _CONSUMER_SECRET_ENV = {
     "cpcc-blackboard": "LTI11_BLACKBOARD_SECRET",
     "cpcc-moodle": "LTI11_MOODLE_SECRET",
     "cpcc-brightspace": "LTI11_BRIGHTSPACE_SECRET",
+    "ltibroker": "LTI11_LTIBROKER_SECRET",
 }
 
 CLAIM_DUE_SQL = """

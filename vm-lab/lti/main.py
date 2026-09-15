@@ -61,6 +61,7 @@ LTI11_CONSUMERS = {
     "cpcc-blackboard": os.getenv("LTI11_BLACKBOARD_SECRET"),
     "cpcc-moodle": os.getenv("LTI11_MOODLE_SECRET"),
     "cpcc-brightspace": os.getenv("LTI11_BRIGHTSPACE_SECRET"),
+    "ltibroker": os.getenv("LTI11_LTIBROKER_SECRET"),
     "test-consumer": os.getenv("LTI11_TEST_SECRET", "test-secret-dev-only"),
 }
 
