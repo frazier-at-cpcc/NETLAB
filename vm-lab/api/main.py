@@ -12,7 +12,6 @@ import os
 import time
 import secrets
 import string
-import subprocess
 import logging
 import asyncio
 import json
@@ -32,9 +31,11 @@ from proxmoxer import ProxmoxAPI
 
 try:
     from cells import upsert_grade_cell
+    from ssh import run_ssh_command
     from tokens import assign_grade_token, get_passback_url, inject_guest_xapi_config
 except ImportError:
     from api.cells import upsert_grade_cell
+    from api.ssh import run_ssh_command
     from api.tokens import assign_grade_token, get_passback_url, inject_guest_xapi_config
 
 # Configure logging
@@ -616,32 +617,6 @@ async def wait_for_ssh_login(ip: str, user: str, password: str, timeout: int = 1
             logger.info(f"System still booting on {ip}, waiting...")
         await asyncio.sleep(5)
     return False
-
-
-async def run_ssh_command(ip: str, user: str, password: str, command: str, timeout: int = 60) -> tuple:
-    """Run a command via SSH and return (success, output)."""
-    import subprocess
-
-    ssh_cmd = [
-        "sshpass", "-p", password,
-        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=10",
-        f"{user}@{ip}",
-        command
-    ]
-
-    try:
-        result = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=timeout)
-            ),
-            timeout=timeout + 5
-        )
-        return result.returncode == 0, result.stdout + result.stderr
-    except Exception as e:
-        logger.error(f"SSH command failed: {e}")
-        return False, str(e)
 
 
 async def check_nested_host_ssh(ip: str, user: str, password: str, nested_host: str) -> bool:

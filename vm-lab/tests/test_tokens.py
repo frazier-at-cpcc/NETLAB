@@ -141,6 +141,39 @@ def test_inject_failure_warns_without_token_or_destroy(caplog):
     assert any(r.levelno == logging.WARNING for r in caplog.records)
 
 
+def test_run_ssh_timeout_does_not_log_token_or_password(caplog, monkeypatch):
+    import subprocess
+    from api.ssh import run_ssh_command
+
+    sentinel = "SENTINEL-GRADE-TOKEN"
+    password = "super-secret-ssh-password"
+    command = f"lab xapi-config token {sentinel}"
+    leaked = subprocess.TimeoutExpired(
+        cmd=["sshpass", "-p", password, "ssh", "kiosk@10.0.0.1", command],
+        timeout=1,
+    )
+    assert sentinel in str(leaked)
+    assert password in str(leaked)
+
+    def boom(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout", 1))
+
+    monkeypatch.setattr("api.ssh.subprocess.run", boom)
+
+    with caplog.at_level(logging.ERROR):
+        success, output = asyncio.run(
+            run_ssh_command("10.0.0.1", "kiosk", password, command, timeout=1)
+        )
+
+    assert success is False
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    combined = f"{text}\n{output}"
+    assert sentinel not in combined
+    assert password not in combined
+    assert command not in combined
+    assert "SSH command failed" in text
+
+
 def test_inject_success_logs_session_id_not_token(caplog):
     token = "super-secret-token-value"
 
