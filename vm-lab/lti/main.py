@@ -65,8 +65,11 @@ LTI11_CONSUMERS = {
     "test-consumer": os.getenv("LTI11_TEST_SECRET", "test-secret-dev-only"),
 }
 
-# Remove None entries
-LTI11_CONSUMERS = {k: v for k, v in LTI11_CONSUMERS.items() if v is not None}
+# Remove unset or empty entries. docker-compose supplies an empty string
+# (not None) when an operator forgets a .env value, and a falsy secret
+# must be dropped the same way as a missing one, or verify_oauth_signature
+# ends up signing with the well-known key "&".
+LTI11_CONSUMERS = {k: v for k, v in LTI11_CONSUMERS.items() if v}
 
 # OAuth timestamp tolerance (5 minutes)
 OAUTH_TIMESTAMP_TOLERANCE = 300

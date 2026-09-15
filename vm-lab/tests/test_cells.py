@@ -16,6 +16,11 @@ class StubPool:
     async def fetchrow(self, sql, *args):
         self.calls.append((sql, args))
         key = (args[0], args[1])
+        # Mirrors the real UPSERT_GRADE_CELL_SQL's `previous` CTE: capture
+        # the sourcedid as it stood before this write, same statement
+        # snapshot semantics Postgres gives a WITH ... SELECT alongside a
+        # data-modifying INSERT ... ON CONFLICT.
+        previous_sourcedid = self.rows[key]["sourcedid"] if key in self.rows else None
         if key in self.rows:
             row = self.rows[key]
             row["resource_link_id"] = args[2]
@@ -23,20 +28,22 @@ class StubPool:
             row["sourcedid"] = args[4]
             row["consumer_key"] = args[5]
             row["updated_at"] = "updated"
-            return dict(row)
-        row = {
-            "id": self._next_id,
-            "course_session_id": args[0],
-            "lab_slug": args[1],
-            "resource_link_id": args[2],
-            "outcome_service_url": args[3],
-            "sourcedid": args[4],
-            "consumer_key": args[5],
-            "updated_at": "created",
-        }
-        self._next_id += 1
-        self.rows[key] = row
-        return dict(row)
+        else:
+            row = {
+                "id": self._next_id,
+                "course_session_id": args[0],
+                "lab_slug": args[1],
+                "resource_link_id": args[2],
+                "outcome_service_url": args[3],
+                "sourcedid": args[4],
+                "consumer_key": args[5],
+                "updated_at": "created",
+            }
+            self._next_id += 1
+            self.rows[key] = row
+        result = dict(row)
+        result["previous_sourcedid"] = previous_sourcedid
+        return result
 
 
 def _sql(call):
@@ -239,3 +246,46 @@ def test_persist_missing_outcome_does_not_log_sourcedid(caplog):
     assert "rl-cli" in text
     assert "secret-sourcedid-value" not in text
     assert "sourcedid" not in text.lower()
+
+
+def test_warning_logged_when_relaunch_changes_an_existing_sourcedid(caplog):
+    """An instructor who pastes the same broker route on two resource
+    links causes two distinct sourcedids to land in the same
+    (course_session_id, lab_slug) cell across relaunches. The overwrite
+    itself is correct, but it silently orphans the first sourcedid's
+    grade column forever unless an operator is warned."""
+    db = StubPool()
+    upsert_grade_cell, first = _upsert()
+    asyncio.run(upsert_grade_cell(db, **first))
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(upsert_grade_cell(db, **{**first, "sourcedid": "cell-2"}))
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    text = warnings[0].getMessage()
+    assert first["course_session_id"] in text
+    assert first["lab_slug"] in text
+    assert first["sourcedid"] not in text
+    assert "cell-2" not in text
+
+
+def test_no_warning_when_relaunch_sourcedid_is_unchanged(caplog):
+    db = StubPool()
+    upsert_grade_cell, first = _upsert()
+    asyncio.run(upsert_grade_cell(db, **first))
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(upsert_grade_cell(db, **first))
+
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+
+def test_no_warning_on_first_insert(caplog):
+    db = StubPool()
+    upsert_grade_cell, first = _upsert()
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(upsert_grade_cell(db, **first))
+
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []

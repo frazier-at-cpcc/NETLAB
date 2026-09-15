@@ -16,6 +16,7 @@ import logging
 import asyncio
 import json
 import re
+import ipaddress
 from typing import Optional, List
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -562,6 +563,24 @@ def destroy_vm(proxmox: ProxmoxAPI, vmid: int):
         logger.error(f"Failed to destroy VM {vmid}: {e}")
 
 
+def _validated_ipv4(candidate: Optional[str]) -> Optional[str]:
+    """Return candidate if it is a syntactically valid IPv4 address, else None.
+
+    vm_ip is later interpolated into a command string that reaches
+    `script -c`, which hands its argument to /bin/sh -c inside the ttyd
+    container. The Proxmox guest agent reports it from inside a VM the
+    student controls as root, so every candidate must be validated here,
+    at the source, rather than quoted at each call site.
+    """
+    if not candidate:
+        return None
+    try:
+        ipaddress.IPv4Address(candidate)
+    except ValueError:
+        return None
+    return candidate
+
+
 def get_vm_ip(proxmox: ProxmoxAPI, vmid: int) -> Optional[str]:
     """Get VM IP address from Proxmox guest agent or network info."""
     try:
@@ -573,7 +592,12 @@ def get_vm_ip(proxmox: ProxmoxAPI, vmid: int) -> Optional[str]:
                 continue
             for addr in iface.get('ip-addresses', []):
                 if addr.get('ip-address-type') == 'ipv4':
-                    ip = addr.get('ip-address')
+                    ip = _validated_ipv4(addr.get('ip-address'))
+                    if ip is None and addr.get('ip-address'):
+                        logger.warning(
+                            f"VM {vmid} guest agent reported a network interface "
+                            "address that is not valid IPv4; ignoring it"
+                        )
                     if ip and not ip.startswith('127.') and not ip.startswith('169.254.'):
                         all_ips.append(ip)
 
@@ -602,7 +626,9 @@ def get_vm_ip(proxmox: ProxmoxAPI, vmid: int) -> Optional[str]:
         status = proxmox.nodes(PROXMOX_NODE).qemu(vmid).status.current.get()
         # Some setups expose IP in status
         if 'ip' in status:
-            return status['ip']
+            validated = _validated_ipv4(status['ip'])
+            if validated:
+                return validated
     except Exception:
         pass
 

@@ -83,3 +83,20 @@ def test_ltibroker_is_absent_when_the_secret_is_unset(monkeypatch, load_lti_main
     lti_main = load_lti_main()
 
     assert "ltibroker" not in lti_main.LTI11_CONSUMERS
+
+
+def test_ltibroker_is_absent_when_the_secret_is_the_empty_string(
+    monkeypatch, load_lti_main
+):
+    """docker-compose.yml declares
+    ``- LTI11_LTIBROKER_SECRET=${LTI11_LTIBROKER_SECRET}``. When that
+    shell variable is unset, compose supplies an empty string, not an
+    absent variable. The "drop None entries" filter in lti/main.py must
+    not let that empty string survive, or verify_oauth_signature ends up
+    signing with the well-known key "&".
+    """
+    monkeypatch.setenv("LTI11_LTIBROKER_SECRET", "")
+
+    lti_main = load_lti_main()
+
+    assert "ltibroker" not in lti_main.LTI11_CONSUMERS
