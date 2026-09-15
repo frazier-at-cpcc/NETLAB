@@ -21,9 +21,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, PlainTextResponse, Response, JSONResponse
 from pydantic import BaseModel
 import asyncpg
 import docker
@@ -31,10 +31,24 @@ from proxmoxer import ProxmoxAPI
 
 try:
     from cells import upsert_grade_cell
+    from grades import (
+        GradeRequest,
+        InvalidGradeScore,
+        accept_grade,
+        extract_bearer_token,
+        map_grade_http,
+    )
     from ssh import run_ssh_command
     from tokens import assign_grade_token, get_passback_url, inject_guest_xapi_config
 except ImportError:
     from api.cells import upsert_grade_cell
+    from api.grades import (
+        GradeRequest,
+        InvalidGradeScore,
+        accept_grade,
+        extract_bearer_token,
+        map_grade_http,
+    )
     from api.ssh import run_ssh_command
     from api.tokens import assign_grade_token, get_passback_url, inject_guest_xapi_config
 
@@ -949,6 +963,38 @@ async def upsert_cell(body: GradeCellRequest):
     if cell_id is None:
         return Response(status_code=204)
     return {"id": cell_id}
+
+
+@app.post("/api/grade")
+async def post_grade(
+    body: GradeRequest,
+    authorization: Optional[str] = Header(default=None),
+    x_labsconnect_idempotency_key: Optional[str] = Header(
+        default=None, alias="X-LabsConnect-Idempotency-Key"
+    ),
+):
+    """Accept a token-keyed grade post. Does not deliver POX."""
+    token = extract_bearer_token(authorization)
+    if token is None:
+        return Response(status_code=401)
+    if not x_labsconnect_idempotency_key:
+        return JSONResponse(
+            status_code=400, content={"error": "missing_idempotency_key"}
+        )
+    db = await get_db()
+    try:
+        result = await accept_grade(
+            db,
+            token=token,
+            idempotency_key=x_labsconnect_idempotency_key,
+            request=body,
+        )
+    except InvalidGradeScore as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    status_code, payload = map_grade_http(result)
+    if payload is None:
+        return Response(status_code=status_code)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 @app.get("/api/session/{session_id}", response_model=Session)
