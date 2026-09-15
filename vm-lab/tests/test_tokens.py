@@ -16,6 +16,7 @@ from api.tokens import (
     inject_guest_xapi_config,
     mint_grade_token,
     nested_xapi_config_command,
+    nested_xapi_email_command,
 )
 
 
@@ -291,6 +292,39 @@ def test_nested_xapi_config_command_survives_real_shell_layers(value, tmp_path):
 
     assert received["argv"] == ["xapi-config", "token", "--provision", value]
     assert received["provision_env"] == "1"
+
+
+# --- Email path: same defect, deliberately NOT provisioner-locked --------
+#
+# `main.py` built the xAPI email-configuration command by hand with the
+# identical broken nesting (value single-quoted inside a double-quoted
+# `bash -lc "..."` argument). It is worse than the token/passback/session-id
+# case: `request.user_email` comes from the inbound LTI launch
+# (`lis_person_contact_email_primary`), so it crosses a trust boundary the
+# provisioner-generated values never do. Unlike those values, email must
+# NOT gain `--provision` or `LAB_XAPI_PROVISION=1` -- the design deliberately
+# leaves email overridable by the student, since the LRS actor is their own
+# mailbox. Both this command and the token/passback/session-id command now
+# go through the same shared `nested_ssh_command` layer-quoting builder;
+# only the inner command each one builds differs.
+
+
+@pytest.mark.parametrize("value", ADVERSARIAL_VALUES)
+def test_nested_xapi_email_command_survives_real_shell_layers(value, tmp_path):
+    cmd = nested_xapi_email_command("student", "workstation", value)
+
+    received = _run_command_for_real(cmd, tmp_path)
+
+    assert received["argv"] == ["xapi-config", "email", value]
+    assert received["provision_env"] is None
+
+
+def test_nested_xapi_email_command_never_gains_provisioner_authority():
+    cmd = nested_xapi_email_command("student", "workstation", "student@example.edu")
+
+    assert "--provision" not in cmd
+    assert "LAB_XAPI_PROVISION" not in cmd
+    assert "lab xapi-config email student@example.edu" in cmd
 
 
 def test_inject_success_logs_session_id_not_token(caplog):

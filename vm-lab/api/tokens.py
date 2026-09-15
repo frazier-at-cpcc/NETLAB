@@ -40,6 +40,32 @@ def redact_secret(text: str, secret: str) -> str:
     return text.replace(secret, "[redacted]")
 
 
+def nested_ssh_command(nested_user: str, nested_host: str, inner_command: str) -> str:
+    """Build an `ssh ... 'bash -lc <inner_command>'` string, quoting every
+    nesting layer with shlex.quote instead of by hand.
+
+    This string is interpreted by TWO real shells before it reaches
+    `inner_command`: the outer virtual machine's login shell (invoked by
+    its sshd to run the string this function returns), and then the nested
+    guest's login shell (invoked by ITS sshd to run the embedded
+    `bash -lc ...` call once the outer shell has stripped its layer of
+    quoting). shlex.quote wraps each layer in single quotes -- which are
+    inert to everything except another single quote -- so neither hop can
+    expand `$( )`, backticks, or `$VAR`, or break on an embedded quote.
+
+    Quoting any caller-supplied value that goes INTO `inner_command` is the
+    caller's responsibility; this function only protects the layers around
+    `inner_command` itself, since `inner_command` is meant to still read as
+    a shell command (e.g. containing its own `--flag value` structure) once
+    it reaches the nested guest.
+    """
+    remote = f"bash -lc {shlex.quote(inner_command)}"
+    return (
+        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"{nested_user}@{nested_host} {shlex.quote(remote)}"
+    )
+
+
 def nested_xapi_config_command(
     nested_user: str, nested_host: str, key: str, value: str
 ) -> str:
@@ -47,11 +73,21 @@ def nested_xapi_config_command(
         f"LAB_XAPI_PROVISION=1 lab xapi-config {key} "
         f"--provision {shlex.quote(value)}"
     )
-    remote = f"bash -lc {shlex.quote(inner)}"
-    return (
-        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-        f"{nested_user}@{nested_host} {shlex.quote(remote)}"
-    )
+    return nested_ssh_command(nested_user, nested_host, inner)
+
+
+def nested_xapi_email_command(nested_user: str, nested_host: str, email: str) -> str:
+    """Configure the guest's xAPI actor email.
+
+    Unlike token, passback, and session-id, email is NOT provisioner-locked:
+    the Learning Record Store actor is the student's own mailbox, so this
+    must never gain `--provision` or set `LAB_XAPI_PROVISION`. `email`
+    originates from the inbound LTI launch (`lis_person_contact_email_primary`),
+    so it crosses a trust boundary the token/passback/session-id values
+    never do; it still must be quoted, just without provisioner authority.
+    """
+    inner = f"lab xapi-config email {shlex.quote(email)}"
+    return nested_ssh_command(nested_user, nested_host, inner)
 
 
 async def assign_grade_token(db, session_id: str) -> str:

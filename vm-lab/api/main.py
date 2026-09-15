@@ -43,7 +43,12 @@ try:
     )
     from pox_delivery import pox_delivery_loop
     from ssh import run_ssh_command
-    from tokens import assign_grade_token, get_passback_url, inject_guest_xapi_config
+    from tokens import (
+        assign_grade_token,
+        get_passback_url,
+        inject_guest_xapi_config,
+        nested_xapi_email_command,
+    )
 except ImportError:
     from api.cells import upsert_grade_cell
     from api.grades import (
@@ -58,7 +63,12 @@ except ImportError:
     )
     from api.pox_delivery import pox_delivery_loop
     from api.ssh import run_ssh_command
-    from api.tokens import assign_grade_token, get_passback_url, inject_guest_xapi_config
+    from api.tokens import (
+        assign_grade_token,
+        get_passback_url,
+        inject_guest_xapi_config,
+        nested_xapi_email_command,
+    )
 
 # Configure logging
 logging.basicConfig(
@@ -1374,7 +1384,9 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 if request.user_email:
                     logger.info(f"Configuring xAPI with user email: {request.user_email}")
                     # Use bash -lc to ensure login shell environment with lab subcommands available
-                    xapi_config_cmd = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {NESTED_SSH_USER}@{NESTED_SSH_HOST} 'bash -lc \"lab xapi-config email {request.user_email}\"'"
+                    xapi_config_cmd = nested_xapi_email_command(
+                        NESTED_SSH_USER, NESTED_SSH_HOST, request.user_email
+                    )
                     success, output = await run_ssh_command(
                         vm_ip, SSH_USER, SSH_PASSWORD,
                         xapi_config_cmd,
