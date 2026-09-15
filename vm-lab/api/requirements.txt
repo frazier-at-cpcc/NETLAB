@@ -18,3 +18,6 @@ pydantic==2.5.3
 
 # HTTP client (for health checks and async requests)
 httpx==0.26.0
+
+# OAuth 1.0a signing for LTI 1.1 POX replaceResult
+oauthlib==3.3.1

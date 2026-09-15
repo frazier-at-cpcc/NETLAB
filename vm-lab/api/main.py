@@ -38,6 +38,7 @@ try:
         extract_bearer_token,
         map_grade_http,
     )
+    from pox_delivery import pox_delivery_loop
     from ssh import run_ssh_command
     from tokens import assign_grade_token, get_passback_url, inject_guest_xapi_config
 except ImportError:
@@ -49,6 +50,7 @@ except ImportError:
         extract_bearer_token,
         map_grade_http,
     )
+    from api.pox_delivery import pox_delivery_loop
     from api.ssh import run_ssh_command
     from api.tokens import assign_grade_token, get_passback_url, inject_guest_xapi_config
 
@@ -278,13 +280,19 @@ async def lifespan(app: FastAPI):
 
     # Start cleanup background task
     cleanup_task = asyncio.create_task(cleanup_loop(app.state.db))
+    pox_task = asyncio.create_task(pox_delivery_loop(app.state.db))
 
     yield
 
     # Cleanup
     cleanup_task.cancel()
+    pox_task.cancel()
     try:
         await cleanup_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await pox_task
     except asyncio.CancelledError:
         pass
 

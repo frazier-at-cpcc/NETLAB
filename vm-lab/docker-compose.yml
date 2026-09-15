@@ -87,6 +87,10 @@ services:
       # General
       - DOMAIN=${DOMAIN}
       - DATABASE_URL=postgresql://lab:${LAB_DB_PASS}@postgres:5432/lab
+      - LTI11_CANVAS_SECRET=${LTI11_CANVAS_SECRET}
+      - LTI11_BLACKBOARD_SECRET=${LTI11_BLACKBOARD_SECRET}
+      - LTI11_MOODLE_SECRET=${LTI11_MOODLE_SECRET}
+      - LTI11_BRIGHTSPACE_SECRET=${LTI11_BRIGHTSPACE_SECRET}
       - SSH_PRIVATE_KEY_PATH=/app/keys/id_ed25519
       - SSH_USER=${SSH_USER:-kiosk}
       - RECORDINGS_DIR=/var/lib/vm-lab/recordings
