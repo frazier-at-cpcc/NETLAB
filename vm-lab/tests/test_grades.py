@@ -18,6 +18,17 @@ class UniqueViolationError(Exception):
     sqlstate = "23505"
 
 
+class _AsyncCM:
+    def __init__(self, value):
+        self._value = value
+
+    async def __aenter__(self):
+        return self._value
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 class GradeStubPool:
     """In-memory stand-in for asyncpg. Records SQL and grade rows."""
 
@@ -28,8 +39,18 @@ class GradeStubPool:
         self.events = []
         self.events_by_key = {}
         self.deliveries = []
+        self.acquired = 0
+        self.transactions = 0
         self._next_event_id = 1
         self._next_delivery_id = 1
+
+    def acquire(self):
+        self.acquired += 1
+        return _AsyncCM(self)
+
+    def transaction(self):
+        self.transactions += 1
+        return _AsyncCM(self)
 
     def add_session(self, session_id, token, status="running"):
         self.sessions[hash_grade_token(token)] = {
@@ -214,6 +235,12 @@ def test_first_post_accepted_inserts_event_and_pending_delivery():
     session_lookup = db.calls[0]
     assert session_lookup[2][0] == hash_grade_token(TOKEN)
     assert TOKEN not in session_lookup[2]
+    event_inserts = [c for c in db.calls if "INSERT INTO grade_events" in _sql(c)]
+    assert len(event_inserts) == 1
+    payload_arg = event_inserts[0][2][6]
+    assert isinstance(payload_arg, str)
+    assert db.acquired >= 1
+    assert db.transactions >= 1
 
 
 def test_same_idempotency_key_returns_duplicate_one_event():

@@ -1,3 +1,4 @@
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -112,50 +113,52 @@ async def accept_grade(
         raise InvalidGradeScore("score.max must be greater than 0")
 
     digest = hash_grade_token(token)
-    session_id = await db.fetchval(SELECT_SESSION_SQL, digest)
-    if session_id is None:
-        logger.info("Grade post rejected: no session")
-        return GradeAcceptResult(status="no_session", event_id=None)
+    async with db.acquire() as conn:
+        session_id = await conn.fetchval(SELECT_SESSION_SQL, digest)
+        if session_id is None:
+            logger.info("Grade post rejected: no session")
+            return GradeAcceptResult(status="no_session", event_id=None)
 
-    cell_id = await db.fetchval(SELECT_CELL_SQL, session_id, request.slug)
-    if cell_id is None:
-        logger.info(
-            "Grade post rejected: no handle for session %s slug %s",
-            session_id,
-            request.slug,
-        )
-        return GradeAcceptResult(status="no_handle", event_id=None)
+        cell_id = await conn.fetchval(SELECT_CELL_SQL, session_id, request.slug)
+        if cell_id is None:
+            logger.info(
+                "Grade post rejected: no handle for session %s slug %s",
+                session_id,
+                request.slug,
+            )
+            return GradeAcceptResult(status="no_handle", event_id=None)
 
-    payload = request.model_dump(mode="json")
-    try:
-        event_id = await db.fetchval(
-            INSERT_EVENT_SQL,
-            cell_id,
-            idempotency_key,
-            request.slug,
-            request.score.raw,
-            request.score.max,
-            request.occurred_at,
-            payload,
-        )
-    except Exception as exc:
-        if not _is_unique_violation(exc):
-            raise
-        event_id = await db.fetchval(SELECT_EVENT_BY_KEY_SQL, idempotency_key)
+        payload = json.dumps(request.model_dump(mode="json"))
+        try:
+            async with conn.transaction():
+                event_id = await conn.fetchval(
+                    INSERT_EVENT_SQL,
+                    cell_id,
+                    idempotency_key,
+                    request.slug,
+                    request.score.raw,
+                    request.score.max,
+                    request.occurred_at,
+                    payload,
+                )
+                await conn.execute(SUPERSEDE_DELIVERIES_SQL, cell_id)
+                await conn.execute(INSERT_DELIVERY_SQL, event_id, cell_id)
+        except Exception as exc:
+            if not _is_unique_violation(exc):
+                raise
+            event_id = await conn.fetchval(SELECT_EVENT_BY_KEY_SQL, idempotency_key)
+            logger.info(
+                "Duplicate grade event %s for session %s slug %s",
+                event_id,
+                session_id,
+                request.slug,
+            )
+            return GradeAcceptResult(status="duplicate", event_id=event_id)
+
         logger.info(
-            "Duplicate grade event %s for session %s slug %s",
+            "Accepted grade event %s for session %s slug %s",
             event_id,
             session_id,
             request.slug,
         )
-        return GradeAcceptResult(status="duplicate", event_id=event_id)
-
-    await db.execute(SUPERSEDE_DELIVERIES_SQL, cell_id)
-    await db.execute(INSERT_DELIVERY_SQL, event_id, cell_id)
-    logger.info(
-        "Accepted grade event %s for session %s slug %s",
-        event_id,
-        session_id,
-        request.slug,
-    )
-    return GradeAcceptResult(status="accepted", event_id=event_id)
+        return GradeAcceptResult(status="accepted", event_id=event_id)
