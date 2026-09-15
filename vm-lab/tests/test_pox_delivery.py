@@ -12,6 +12,13 @@ SECRETS = {CONSUMER_KEY: CONSUMER_SECRET}
 NOW = datetime(2026, 9, 14, 22, 0, 0, tzinfo=timezone.utc)
 DELIVERY_ID = 1
 CELL_ID = 7
+SUCCESS_ENVELOPE = (
+    '<imsx_POXEnvelopeResponse xmlns="http://www.imsglobal.org/services/'
+    'ltiv1p1/xsd/imsoms_v1p0"><imsx_POXHeader><imsx_POXResponseHeaderInfo>'
+    "<imsx_statusInfo><imsx_codeMajor>success</imsx_codeMajor>"
+    "</imsx_statusInfo></imsx_POXResponseHeaderInfo></imsx_POXHeader>"
+    "</imsx_POXEnvelopeResponse>"
+)
 
 
 class _AsyncCM:
@@ -36,13 +43,14 @@ class FrozenRNG:
 
 
 class FakeHttp:
-    def __init__(self, status_code=200):
+    def __init__(self, status_code=200, text=SUCCESS_ENVELOPE):
         self.status_code = status_code
+        self.text = text
         self.calls = []
 
     async def post(self, url, **kwargs):
         self.calls.append({"url": url, **kwargs})
-        return SimpleNamespace(status_code=self.status_code)
+        return SimpleNamespace(status_code=self.status_code, text=self.text)
 
 
 class DeliveryStubPool:
@@ -257,3 +265,30 @@ def test_deliver_logs_ids_not_sourcedid_or_oauth_header(caplog):
     assert auth not in text
     assert "oauth_signature" not in text
     assert CONSUMER_SECRET not in text
+
+
+def test_request_carries_a_header_and_a_text_string():
+    from api.pox_delivery import build_replace_result
+
+    body = build_replace_result("abc123", Decimal("0.8000"))
+
+    assert "imsx_POXHeader" in body
+    assert "<imsx_version>V1.0</imsx_version>" in body
+    assert "<textString>0.8000</textString>" in body
+    assert "<text>" not in body
+
+
+def test_pox_status_reads_the_code_major():
+    from api.pox_delivery import pox_status
+
+    ok = (
+        '<imsx_POXEnvelopeResponse xmlns="http://www.imsglobal.org/services/'
+        'ltiv1p1/xsd/imsoms_v1p0"><imsx_POXHeader><imsx_POXResponseHeaderInfo>'
+        "<imsx_statusInfo><imsx_codeMajor>success</imsx_codeMajor>"
+        "</imsx_statusInfo></imsx_POXResponseHeaderInfo></imsx_POXHeader>"
+        "</imsx_POXEnvelopeResponse>"
+    )
+
+    assert pox_status(ok) == "success"
+    assert pox_status(ok.replace("success", "failure")) == "failure"
+    assert pox_status("") == "malformed"

@@ -3,6 +3,7 @@ import inspect
 import logging
 import os
 import random
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from xml.etree import ElementTree
@@ -86,6 +87,10 @@ def scale_score(score_raw, score_max) -> Decimal:
 
 def build_replace_result(sourcedid: str, score: Decimal) -> str:
     envelope = ElementTree.Element(f"{{{_POX_NAMESPACE}}}imsx_POXEnvelopeRequest")
+    header = ElementTree.SubElement(envelope, f"{{{_POX_NAMESPACE}}}imsx_POXHeader")
+    info = ElementTree.SubElement(header, f"{{{_POX_NAMESPACE}}}imsx_POXRequestHeaderInfo")
+    ElementTree.SubElement(info, f"{{{_POX_NAMESPACE}}}imsx_version").text = "V1.0"
+    ElementTree.SubElement(info, f"{{{_POX_NAMESPACE}}}imsx_messageIdentifier").text = uuid.uuid4().hex
     body = ElementTree.SubElement(envelope, f"{{{_POX_NAMESPACE}}}imsx_POXBody")
     request = ElementTree.SubElement(body, f"{{{_POX_NAMESPACE}}}replaceResultRequest")
     record = ElementTree.SubElement(request, f"{{{_POX_NAMESPACE}}}resultRecord")
@@ -94,9 +99,26 @@ def build_replace_result(sourcedid: str, score: Decimal) -> str:
     result = ElementTree.SubElement(record, f"{{{_POX_NAMESPACE}}}result")
     score_node = ElementTree.SubElement(result, f"{{{_POX_NAMESPACE}}}resultScore")
     ElementTree.SubElement(score_node, f"{{{_POX_NAMESPACE}}}language").text = "en"
-    ElementTree.SubElement(score_node, f"{{{_POX_NAMESPACE}}}text").text = str(score)
+    ElementTree.SubElement(score_node, f"{{{_POX_NAMESPACE}}}textString").text = str(score)
     ElementTree.register_namespace("", _POX_NAMESPACE)
     return ElementTree.tostring(envelope, encoding="utf-8", xml_declaration=True).decode("utf-8")
+
+
+def pox_status(body: str) -> str:
+    """Return the imsx_codeMajor value, or 'malformed' when there is none."""
+    if not (body or "").strip():
+        return "malformed"
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError:
+        return "malformed"
+    node = next(
+        (n for n in root.iter() if n.tag.rsplit("}", 1)[-1] == "imsx_codeMajor"),
+        None,
+    )
+    if node is None:
+        return "malformed"
+    return (node.text or "").strip().lower() or "malformed"
 
 
 def load_lti11_secrets(environ=None) -> dict[str, str]:
@@ -183,8 +205,29 @@ async def _finish(conn, http, secrets, now, row, rng) -> None:
 
     status = response.status_code
     if 200 <= status < 300:
-        await conn.execute(UPDATE_DELIVERED_SQL, delivery_id, attempts, now)
-        _log_result(delivery_id, event_id, cell_id, "DELIVERED")
+        code = pox_status(getattr(response, "text", "") or "")
+        if code == "success":
+            await conn.execute(UPDATE_DELIVERED_SQL, delivery_id, attempts, now)
+            _log_result(delivery_id, event_id, cell_id, "DELIVERED")
+            return
+        if code in ("processing", "malformed"):
+            delay = _backoff_seconds(attempts, rng)
+            await conn.execute(
+                UPDATE_RETRYING_SQL,
+                delivery_id,
+                attempts,
+                now + timedelta(seconds=delay),
+                f"upstream POX status {code}",
+            )
+            _log_result(delivery_id, event_id, cell_id, "RETRYING")
+            return
+        await conn.execute(
+            UPDATE_DEAD_LETTER_SQL,
+            delivery_id,
+            attempts,
+            f"upstream rejected the score: {code}",
+        )
+        _log_result(delivery_id, event_id, cell_id, "DEAD_LETTER")
         return
     if 400 <= status < 500:
         await conn.execute(
