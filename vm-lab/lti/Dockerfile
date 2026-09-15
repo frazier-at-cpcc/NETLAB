@@ -16,6 +16,7 @@ COPY lti/main.py .
 COPY lti/launch_context.py .
 COPY lti/persist_cell.py .
 COPY api/session_keys.py .
+COPY api/service_auth.py .
 COPY lti/lti13_config.json* ./
 
 # Copy templates and static files for instructor dashboard

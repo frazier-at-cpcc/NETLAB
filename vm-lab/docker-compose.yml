@@ -26,6 +26,7 @@ services:
     restart: unless-stopped
     environment:
       - ORCHESTRATOR_API=http://lab-api:8000
+      - LAB_API_SERVICE_TOKEN=${LAB_API_SERVICE_TOKEN}
       - LTI_BASE_URL=${LTI_BASE_URL}
       - DOMAIN=${DOMAIN}
       - DATABASE_URL=postgresql://lti:${LTI_DB_PASS}@postgres:5432/lti
@@ -94,6 +95,7 @@ services:
       - SSH_PRIVATE_KEY_PATH=/app/keys/id_ed25519
       - SSH_USER=${SSH_USER:-kiosk}
       - RECORDINGS_DIR=/var/lib/vm-lab/recordings
+      - LAB_API_SERVICE_TOKEN=${LAB_API_SERVICE_TOKEN}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./lti/keys:/app/keys:ro

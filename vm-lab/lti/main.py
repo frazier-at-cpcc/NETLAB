@@ -21,9 +21,11 @@ from datetime import datetime, timedelta
 try:
     from launch_context import parse_lti11_form
     from persist_cell import persist_grade_cell
+    from service_auth import service_headers
 except ImportError:
     from lti.launch_context import parse_lti11_form
     from lti.persist_cell import persist_grade_cell
+    from api.service_auth import service_headers
 
 from fastapi import FastAPI, Request, HTTPException, Form, Depends
 from fastapi.responses import RedirectResponse, JSONResponse, Response, HTMLResponse
@@ -747,8 +749,16 @@ def cell_ctx_from_session(request: Request):
 
 
 async def post_cell_to_lab_api(client: httpx.AsyncClient, body: dict) -> None:
+    headers = service_headers()
+    if not headers:
+        logger.error(
+            "LAB_API_SERVICE_TOKEN is not configured on the LTI server; "
+            "POST /api/cells will be refused by lab-api"
+        )
     try:
-        response = await client.post(f"{ORCHESTRATOR_API}/api/cells", json=body)
+        response = await client.post(
+            f"{ORCHESTRATOR_API}/api/cells", json=body, headers=headers
+        )
         if response.status_code not in (200, 201, 204):
             logger.warning(
                 "Grade cell persist failed for resource_link_id=%s status=%s",
@@ -1089,7 +1099,15 @@ async def proxy_grade_events(request: Request):
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         params = {k: v for k, v in request.query_params.items() if k != '_token'}
-        response = await client.get(f"{ORCHESTRATOR_API}/api/grade-events", params=params)
+        headers = service_headers()
+        if not headers:
+            logger.error(
+                "LAB_API_SERVICE_TOKEN is not configured on the LTI server; "
+                "GET /api/grade-events will be refused by lab-api"
+            )
+        response = await client.get(
+            f"{ORCHESTRATOR_API}/api/grade-events", params=params, headers=headers
+        )
         return JSONResponse(content=response.json(), status_code=response.status_code)
 
 

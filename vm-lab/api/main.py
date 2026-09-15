@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Header
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, Response, JSONResponse
 from pydantic import BaseModel
@@ -42,6 +42,7 @@ try:
         parse_since,
     )
     from pox_delivery import pox_delivery_loop
+    from service_auth import SERVICE_TOKEN_HEADER, ServiceTokenError, check_service_token, service_token
     from ssh import run_ssh_command
     from tokens import (
         assign_grade_token,
@@ -62,6 +63,7 @@ except ImportError:
         parse_since,
     )
     from api.pox_delivery import pox_delivery_loop
+    from api.service_auth import SERVICE_TOKEN_HEADER, ServiceTokenError, check_service_token, service_token
     from api.ssh import run_ssh_command
     from api.tokens import (
         assign_grade_token,
@@ -968,7 +970,20 @@ async def get_session_by_key(session_key: str):
     return Session(**dict(row))
 
 
-@app.post("/api/cells")
+async def require_service_token(
+    x_labsconnect_service_token: Optional[str] = Header(
+        default=None, alias=SERVICE_TOKEN_HEADER
+    ),
+) -> None:
+    try:
+        check_service_token(
+            configured=service_token(), presented=x_labsconnect_service_token
+        )
+    except ServiceTokenError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@app.post("/api/cells", dependencies=[Depends(require_service_token)])
 async def upsert_cell(body: GradeCellRequest):
     """Persist or update a POX grade cell for a course session."""
     if not body.lab_slug or not body.sourcedid:
@@ -1021,7 +1036,7 @@ async def post_grade(
     return JSONResponse(status_code=status_code, content=payload)
 
 
-@app.get("/api/grade-events")
+@app.get("/api/grade-events", dependencies=[Depends(require_service_token)])
 async def get_grade_events(since: Optional[str] = Query(None)):
     """List delivered grade events for LRS reconcile. Omits tokens and sourcedids."""
     try:
