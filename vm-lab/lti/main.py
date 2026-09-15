@@ -1079,6 +1079,20 @@ async def proxy_sessions(request: Request):
         return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@app.get("/api/grade-events")
+async def proxy_grade_events(request: Request):
+    """Proxy delivered grade events for LRS reconcile. Instructor session required."""
+    token = get_token_from_request(request)
+    session_data = get_instructor_session(token)
+    if not session_data or not session_data.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        params = {k: v for k, v in request.query_params.items() if k != '_token'}
+        response = await client.get(f"{ORCHESTRATOR_API}/api/grade-events", params=params)
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @app.get("/api/stats")
 async def proxy_stats(request: Request):
     """Proxy stats for instructor dashboard."""

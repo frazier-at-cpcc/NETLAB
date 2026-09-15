@@ -34,9 +34,12 @@ try:
     from grades import (
         GradeRequest,
         InvalidGradeScore,
+        InvalidGradeSince,
         accept_grade,
         extract_bearer_token,
+        list_delivered_grade_events,
         map_grade_http,
+        parse_since,
     )
     from pox_delivery import pox_delivery_loop
     from ssh import run_ssh_command
@@ -46,9 +49,12 @@ except ImportError:
     from api.grades import (
         GradeRequest,
         InvalidGradeScore,
+        InvalidGradeSince,
         accept_grade,
         extract_bearer_token,
+        list_delivered_grade_events,
         map_grade_http,
+        parse_since,
     )
     from api.pox_delivery import pox_delivery_loop
     from api.ssh import run_ssh_command
@@ -1003,6 +1009,18 @@ async def post_grade(
     if payload is None:
         return Response(status_code=status_code)
     return JSONResponse(status_code=status_code, content=payload)
+
+
+@app.get("/api/grade-events")
+async def get_grade_events(since: Optional[str] = Query(None)):
+    """List delivered grade events for LRS reconcile. Omits tokens and sourcedids."""
+    try:
+        parsed_since = parse_since(since)
+    except InvalidGradeSince:
+        return JSONResponse(status_code=400, content={"error": "invalid_since"})
+    db = await get_db()
+    events = await list_delivered_grade_events(db, since=parsed_since)
+    return {"events": events}
 
 
 @app.get("/api/session/{session_id}", response_model=Session)

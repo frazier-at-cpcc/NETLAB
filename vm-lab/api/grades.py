@@ -1,7 +1,7 @@
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Literal
 
@@ -46,9 +46,30 @@ INSERT INTO grade_deliveries (event_id, cell_id, state)
 VALUES ($1, $2, 'PENDING')
 """
 
+LIST_DELIVERED_EVENTS_SQL = """
+SELECT
+    s.user_email,
+    c.lab_slug,
+    e.score_raw,
+    e.score_max,
+    d.delivered_at,
+    s.session_id
+FROM grade_events e
+JOIN grade_deliveries d ON d.event_id = e.id
+JOIN grade_cells c ON c.id = d.cell_id
+JOIN vm_sessions s ON s.session_id = c.course_session_id
+WHERE d.state = 'DELIVERED'
+  AND ($1::timestamptz IS NULL OR d.delivered_at >= $1)
+ORDER BY d.delivered_at ASC, e.id ASC
+"""
+
 
 class InvalidGradeScore(ValueError):
     """Raised when score.max is not positive."""
+
+
+class InvalidGradeSince(ValueError):
+    """Raised when the since query parameter is not ISO-8601."""
 
 
 class TaskBody(BaseModel):
@@ -162,3 +183,48 @@ async def accept_grade(
             request.slug,
         )
         return GradeAcceptResult(status="accepted", event_id=event_id)
+
+
+def parse_since(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise InvalidGradeSince("since must be ISO-8601") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _serialize_delivered_event(row) -> dict:
+    delivered_at = row["delivered_at"]
+    if hasattr(delivered_at, "isoformat"):
+        delivered_at = delivered_at.isoformat()
+    raw = row["score_raw"]
+    maximum = row["score_max"]
+    return {
+        "user_email": row["user_email"],
+        "lab_slug": row["lab_slug"],
+        "score_raw": format(raw, "f") if isinstance(raw, Decimal) else str(raw),
+        "score_max": format(maximum, "f") if isinstance(maximum, Decimal) else str(maximum),
+        "delivered_at": delivered_at,
+        "session_id": row["session_id"],
+    }
+
+
+async def list_delivered_grade_events(db, *, since: datetime | None = None) -> list[dict]:
+    async with db.acquire() as conn:
+        rows = await conn.fetch(LIST_DELIVERED_EVENTS_SQL, since)
+    events = [_serialize_delivered_event(row) for row in rows]
+    logger.info(
+        "Listed %s delivered grade events since %s",
+        len(events),
+        since.isoformat() if since is not None else "beginning",
+    )
+    return events
