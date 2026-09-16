@@ -67,6 +67,9 @@ waiting, so the reverse result is inconclusive; the next run must keep a real
 desktop clipboard owner event loop alive while the agent announces the grab.
 Treat that direction as unverified until the production guest image and
 agent/session integration are exercised with a real desktop clipboard owner.
+The follow-up clone attempt was blocked by the throwaway harness inheriting
+`link_down=1` from the source VM; the harness now removes that flag before
+starting the next disposable clone.
 
 ## Recommendation
 
