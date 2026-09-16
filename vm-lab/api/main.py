@@ -45,6 +45,7 @@ try:
         list_delivered_grade_events,
         map_grade_http,
         parse_since,
+        session_grade_summary,
     )
     from lrs_client import parse_stored
     from pox_delivery import pox_delivery_loop
@@ -68,6 +69,7 @@ except ImportError:
         list_delivered_grade_events,
         map_grade_http,
         parse_since,
+        session_grade_summary,
     )
     from api.lrs_client import parse_stored
     from api.pox_delivery import pox_delivery_loop
@@ -1409,6 +1411,22 @@ async def get_session_status(session_id: str):
         progress_percent=progress,
         estimated_seconds_remaining=estimated_remaining
     )
+
+
+@app.get(
+    "/api/session/{session_id}/grades",
+    dependencies=[Depends(require_service_token)],
+)
+async def get_session_grades(session_id: str):
+    """List this session's newest grade per cell, in student-facing terms.
+
+    Gated by the service token like the other internal reads: the browser
+    never reaches this route directly, only lti-server, which derives
+    session_id from its own signed session cookie before calling here.
+    """
+    db = await get_db()
+    grades = await session_grade_summary(db, session_id=session_id)
+    return {"grades": grades}
 
 
 @app.post("/api/provision", response_model=Session)
