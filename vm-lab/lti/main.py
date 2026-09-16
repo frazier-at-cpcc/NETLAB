@@ -20,11 +20,19 @@ from datetime import datetime, timedelta
 
 try:
     from launch_context import parse_lti11_form
-    from persist_cell import persist_grade_cell
+    from persist_cell import (
+        load_pending_cell,
+        persist_grade_cell,
+        store_pending_cell,
+    )
     from service_auth import service_headers
 except ImportError:
     from lti.launch_context import parse_lti11_form
-    from lti.persist_cell import persist_grade_cell
+    from lti.persist_cell import (
+        load_pending_cell,
+        persist_grade_cell,
+        store_pending_cell,
+    )
     from api.service_auth import service_headers
 
 from fastapi import FastAPI, Request, HTTPException, Form, Depends
@@ -772,6 +780,19 @@ def cell_ctx_from_session(request: Request):
     )
 
 
+def cell_ctx_for_provision(request: Request, session_key: str):
+    """Resolve the cell context for a deferred provision.
+
+    Prefer the server-side stash, which survives a blocked third-party
+    cookie. Fall back to the cookie so a stash that expired or a Redis
+    outage still works when the cookie happens to be present.
+    """
+    stashed = load_pending_cell(redis_client, session_key)
+    if stashed is not None:
+        return stashed
+    return cell_ctx_from_session(request)
+
+
 async def post_cell_to_lab_api(client: httpx.AsyncClient, body: dict) -> None:
     headers = service_headers()
     if not headers:
@@ -867,6 +888,10 @@ async def provision_or_redirect(
     request.session['assignment_id'] = assignment_id
     request.session['assignment_title'] = assignment_title
     store_launch_cell_fields(request, ctx)
+    # The cookie above is a third-party cookie inside the LMS iframe and a
+    # browser may drop it. Stash the same fields server-side so the
+    # provision call that follows can persist the grade cell regardless.
+    store_pending_cell(redis_client, session_key, ctx)
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         # Check if user already has an active session
@@ -1287,7 +1312,9 @@ async def provision_student_vm(request: Request):
 
             # Store the current session ID in cookie
             request.session['current_session_id'] = session_id
-            await persist_cell_for_session(client, session_id, cell_ctx_from_session(request))
+            await persist_cell_for_session(
+                client, session_id, cell_ctx_for_provision(request, session_key)
+            )
 
             return JSONResponse(content={
                 "status": "starting",
@@ -1394,7 +1421,9 @@ async def recreate_student_session(request: Request, session_id: str):
 
             # Update the session cookie with new session ID
             request.session['current_session_id'] = new_session_id
-            await persist_cell_for_session(client, new_session_id, cell_ctx_from_session(request))
+            await persist_cell_for_session(
+                client, new_session_id, cell_ctx_for_provision(request, session_key)
+            )
 
             logger.info(f"Recreated session: old={session_id}, new={new_session_id}")
 
