@@ -49,19 +49,22 @@ new descriptor for every WebSocket.
 
 ## Clipboard
 
-**Source support exists; live behavior remains unverified.** Current upstream
+**Source support and browser-to-guest behavior are verified.** Current upstream
 `src/main.js` implements clipboard grab/request/release, reads browser text via
 `navigator.clipboard.readText`, writes it via `navigator.clipboard.writeText`,
 and advertises clipboard-selection and clipboard-by-demand capabilities.
 Older prose documentation and the TODO file are not sufficient evidence that
 clipboard is absent.
 
-No browser-to-guest or guest-to-browser clipboard test has passed in this spike.
-Those tests need a graphical guest session with its SPICE agent, a secure
-browser context, and actual clipboard permissions/user gestures. Test both
-directions using distinctive text; verify the pasted result, not merely that
-an API call returns. Computer Use reported that permissions were not granted
-in this session, so browser verification is still a separate gate.
+The disposable full clone was booted with a graphical GNOME X11 session and
+`spice-vdagent` installed. In a visible focused Chrome tab, the browser wrote
+`SPICE-BROWSER-TO-GUEST-20260916`, sent the SPICE clipboard-grab message, and a
+Tk client in the guest read the same exact text. Browser clipboard permission
+was granted for the local test origin. A reverse guest-to-browser attempt was
+not observed: the guest Tk owner retained its text, but the browser clipboard
+remained unchanged. Treat that direction as unverified until the production
+guest image and agent/session integration are exercised with a real desktop
+clipboard owner.
 
 ## Recommendation
 
@@ -141,9 +144,8 @@ clear a clone lock or force-delete an incompletely identified VM on timeout.
 1. Revise the authentication portion of the design and plan; retain server-only
    tickets. Prove successful and refused authentication, including all channels,
    before attaching a browser.
-2. Run the live browser clipboard test against a fresh disposable clone with a
-   graphical session and SPICE guest agent. Browser automation access must be
-   enabled or the test must be performed interactively by the operator.
+2. Resolve the reverse guest-to-browser clipboard path with a real desktop
+   clipboard owner; retain the browser-to-guest test as a regression check.
 3. Only then mark Task 0 complete and begin the production gateway tasks.
 
 Mutation testing is not claimed: this checkpoint changes documentation only.
