@@ -1174,6 +1174,54 @@ async def proxy_session_status(session_id: str):
             raise HTTPException(status_code=503, detail="Unable to fetch session status")
 
 
+@app.get("/api/my-grades")
+async def get_my_grades(request: Request):
+    """
+    Return the signed-in student's own newest grade per lab.
+
+    Takes no parameter. session_id comes only from request.session, which
+    Starlette derives from the signed lti_session cookie set at launch;
+    nothing supplied by the client -- not a query parameter, not a path
+    segment, not a header, not a body field -- is ever read here. A
+    student who edits any of those cannot make this route name a
+    different session, because nothing in this function looks at them.
+
+    Calls lab-api with the service token, the same gate POST /api/cells
+    and GET /api/grade-events already use, so the browser never reaches
+    lab-api directly. A missing cookie, a service-token misconfiguration,
+    or any upstream failure all degrade to an empty grade list rather
+    than breaking the loading page.
+    """
+    session_id = request.session.get('current_session_id')
+    if not session_id:
+        return JSONResponse(content={"grades": []})
+
+    headers = service_headers()
+    if not headers:
+        logger.error(
+            "LAB_API_SERVICE_TOKEN is not configured on the LTI server; "
+            "GET /api/my-grades will be refused by lab-api"
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{ORCHESTRATOR_API}/api/session/{session_id}/grades",
+                headers=headers,
+            )
+            response.raise_for_status()
+            body = response.json()
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning(
+            "my-grades upstream call failed for session %s: %s",
+            session_id,
+            type(e).__name__,
+        )
+        return JSONResponse(content={"grades": []})
+
+    return JSONResponse(content={"grades": body.get("grades", [])})
+
+
 @app.post("/api/provision")
 async def provision_student_vm(request: Request):
     """
