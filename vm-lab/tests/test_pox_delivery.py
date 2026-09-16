@@ -21,6 +21,7 @@ SUCCESS_ENVELOPE = (
 )
 FAILURE_ENVELOPE = SUCCESS_ENVELOPE.replace("success", "failure")
 PROCESSING_ENVELOPE = SUCCESS_ENVELOPE.replace("success", "processing")
+EMPTY_STATUS_ENVELOPE = SUCCESS_ENVELOPE.replace("success", "")
 
 
 class _AsyncCM:
@@ -294,6 +295,7 @@ def test_pox_status_reads_the_code_major():
     assert pox_status(ok) == "success"
     assert pox_status(ok.replace("success", "failure")) == "failure"
     assert pox_status("") == "malformed"
+    assert pox_status(ok.replace("success", "")) == "malformed"
 
 
 def test_pox_success_envelope_marks_delivered_with_no_error():
@@ -345,6 +347,32 @@ def test_pox_unparseable_body_marks_retrying_not_delivered_or_dead_letter():
     db = DeliveryStubPool()
     db.add_due()
     http = FakeHttp(200, text="")
+    rng = FrozenRNG(1.5)
+
+    _deliver(db, http, rng=rng)
+
+    delivery = db.deliveries[0]
+    assert delivery["state"] == "RETRYING"
+    assert delivery["state"] != "DELIVERED"
+    assert delivery["state"] != "DEAD_LETTER"
+    assert delivery["next_attempt_at"] > NOW
+    assert delivery["last_error"]
+    assert "malformed" in delivery["last_error"]
+    assert delivery["attempts"] == 1
+
+
+def test_pox_present_but_empty_status_marks_retrying_not_dead_letter():
+    """A present-but-empty imsx_codeMajor is as ambiguous as an absent one.
+
+    Both must retry rather than dead-letter, since dead-lettering on an
+    ambiguous response discards a student's grade. This mirrors
+    test_pox_unparseable_body_marks_retrying_not_delivered_or_dead_letter
+    for the case where the element exists but carries no value, and is
+    the counterpart to the broker's own delivery.py fix for repository A.
+    """
+    db = DeliveryStubPool()
+    db.add_due()
+    http = FakeHttp(200, text=EMPTY_STATUS_ENVELOPE)
     rng = FrozenRNG(1.5)
 
     _deliver(db, http, rng=rng)
