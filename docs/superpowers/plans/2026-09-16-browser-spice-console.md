@@ -46,7 +46,12 @@ Each module has one responsibility and is tested without the others. `bridge.py`
 
 ## Task 0: Spike. Answer the spiceproxy and clipboard questions
 
-**2026-09-16 checkpoint:** CONNECT, verified TLS, and SPICE link negotiation passed on a disposable clone, which was deleted. Authentication and live clipboard remain unverified. See [spike findings](../specs/2026-09-16-spice-spike-findings.md). The gateway needs SPICE authentication handling beyond a byte relay; do not begin Task 1 yet.
+**2026-09-16 checkpoint:** CONNECT, verified TLS, SPICE ticket authentication,
+and a four-channel browser console passed on a disposable clone, which was
+deleted. Browser-to-guest clipboard passed; guest-to-browser clipboard remains
+unverified. See [spike findings](../specs/2026-09-16-spice-spike-findings.md).
+The gateway needs SPICE authentication handling beyond a byte relay; do not
+begin Task 1 yet.
 
 **This task produces an answer, not code that ships.** Anything built is throwaway and must be labelled as such. Do not proceed to Task 1 until the findings are recorded.
 

@@ -69,10 +69,10 @@ clipboard owner.
 ## Recommendation
 
 Do not implement Tasks 1–9 from the current snippets unchanged. Retain SPICE
-as the candidate, resolve the gateway authentication design, and finish the
-live clipboard test first. Source support alone does not justify switching to
-noVNC, and the missing authentication step is not evidence that custom SPICE
-ports are required.
+as the candidate, carry the authentication-aware adapter into the design, and
+resolve the reverse clipboard direction before production work. Source
+support alone does not justify switching to noVNC, and the successful
+authentication probe is not evidence that custom SPICE ports are required.
 
 ## Sources inspected
 
@@ -124,13 +124,15 @@ From the existing lab-api container on the lab Docker network:
    descriptor's expected certificate subject.
 4. A SPICE main-channel link request returned magic `REDQ`, protocol 2.2,
    link error **0**, and a 186-byte link reply.
-5. The RSA ticket-authentication probe did **not** run: `cryptography` is not
-   installed in the lab-api container. No dependencies were installed there.
-   This is not a successful authenticated display or clipboard test.
+5. An RSA-OAEP/SHA-1 ticket-authentication probe succeeded with result `0`
+   using the descriptor's public key and password. The disposable browser
+   gateway then repeated that authentication for all four SPICE WebSocket
+   channels and rendered the guest's GNOME desktop in `spice-html5`.
 
-**Conclusion supported by this test:** the Proxmox CONNECT/TLS transport works
-from the lab network, so custom per-clone SPICE ports are unnecessary for that
-transport. A gateway still needs the authentication handling described above.
+**Conclusion supported by this test:** the Proxmox CONNECT/TLS transport and
+ticket authentication work from the lab network, so custom per-clone SPICE
+ports are unnecessary for that transport. A gateway must implement the
+authentication-aware adapter described above before byte relay.
 
 The full disk clone took longer than the original five-minute probe timeout.
 Its task was allowed to finalize, then the same VM was resumed after checking
@@ -142,8 +144,7 @@ clear a clone lock or force-delete an incompletely identified VM on timeout.
 ## Next executable checkpoint
 
 1. Revise the authentication portion of the design and plan; retain server-only
-   tickets. Prove successful and refused authentication, including all channels,
-   before attaching a browser.
+   tickets and preserve the all-channel authentication test as a regression.
 2. Resolve the reverse guest-to-browser clipboard path with a real desktop
    clipboard owner; retain the browser-to-guest test as a regression check.
 3. Only then mark Task 0 complete and begin the production gateway tasks.
