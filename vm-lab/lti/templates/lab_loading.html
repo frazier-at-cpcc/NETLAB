@@ -300,6 +300,13 @@
                             <p><strong class="text-slate-700">Recreate:</strong> Destroys current VM and creates a fresh one.</p>
                             <p><strong class="text-slate-700">Stop:</strong> Shuts down your VM. Relaunch from your LMS to start again.</p>
                         </div>
+
+                        <!-- Grade Panel -->
+                        <div id="grade-panel" style="display: none;">
+                            <h3 class="text-sm font-medium text-slate-700 mb-2">Your grades</h3>
+                            <div id="grade-rows" class="bg-slate-50 rounded-lg p-4 space-y-2"></div>
+                            <p class="text-xs text-slate-400 mt-2">Only labs with a gradebook column appear here. Guided exercises are recorded but are not graded.</p>
+                        </div>
                     </div>
 
                     <!-- Error State -->
@@ -458,6 +465,8 @@
                     break;
                 case 'running':
                     titleEl.textContent = 'Lab Environment';
+                    // The grade panel only matters once a lab exists to grade.
+                    startGradePolling();
                     break;
                 case 'error':
                     titleEl.textContent = 'Provisioning Failed';
@@ -761,6 +770,76 @@
         });
 
         window.addEventListener('beforeunload', stopPolling);
+
+        // --- Student grade panel -------------------------------------------------
+        // Reads /api/my-grades, which derives the session from the signed cookie and
+        // accepts no identifier from the client. Failures here never affect the page.
+        let gradePollTimer = null;
+
+        const GRADE_STATES = {
+            delivered: { text: 'Sent to gradebook', cls: 'bg-emerald-100 text-emerald-800' },
+            sending:   { text: 'Sending',           cls: 'bg-amber-100 text-amber-800' },
+            failed:    { text: 'Not sent, tell your instructor', cls: 'bg-rose-100 text-rose-800' }
+        };
+
+        async function fetchGrades() {
+            try {
+                const response = await fetch('/api/my-grades', { credentials: 'include' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                renderGrades(data.grades);
+            } catch (error) {
+                // Silently ignore polling errors - will retry on next interval
+            }
+        }
+
+        function renderGrades(grades) {
+            const panel = document.getElementById('grade-panel');
+            const container = document.getElementById('grade-rows');
+            if (!panel || !container) return;
+
+            if (!grades || grades.length === 0) {
+                panel.style.display = 'none';
+                return;
+            }
+            panel.style.display = 'block';
+            container.innerHTML = '';
+
+            grades.forEach(grade => {
+                const row = document.createElement('div');
+                row.className = 'flex justify-between items-center';
+
+                const titleSpan = document.createElement('span');
+                titleSpan.className = 'text-sm text-slate-500';
+                titleSpan.textContent = grade.title || grade.slug;
+
+                const right = document.createElement('div');
+                right.className = 'flex items-center space-x-2';
+
+                const scoreSpan = document.createElement('span');
+                scoreSpan.className = 'text-sm text-slate-500';
+                const pct = Math.round(Number(grade.percent) || 0);
+                scoreSpan.textContent = `${grade.score_raw} / ${grade.score_max} (${pct}%)`;
+
+                const pill = document.createElement('span');
+                const state = GRADE_STATES[grade.state] || { text: 'Recorded', cls: 'bg-slate-100 text-slate-700' };
+                pill.className = 'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ' + state.cls;
+                pill.textContent = state.text;
+
+                right.appendChild(scoreSpan);
+                right.appendChild(pill);
+                row.appendChild(titleSpan);
+                row.appendChild(right);
+                container.appendChild(row);
+            });
+        }
+
+        function startGradePolling() {
+            if (gradePollTimer) return;
+            fetchGrades();
+            gradePollTimer = setInterval(fetchGrades, 15000);
+        }
+
     </script>
 </body>
 </html>
