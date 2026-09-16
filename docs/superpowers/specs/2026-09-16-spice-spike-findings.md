@@ -62,9 +62,11 @@ The disposable full clone was booted with a graphical GNOME X11 session and
 Tk client in the guest read the same exact text. Browser clipboard permission
 was granted for the local test origin. A reverse guest-to-browser attempt was
 not observed: the guest Tk owner retained its text, but the browser clipboard
-remained unchanged. Treat that direction as unverified until the production
-guest image and agent/session integration are exercised with a real desktop
-clipboard owner.
+remained unchanged. That first owner harness did not run a Tk event loop while
+waiting, so the reverse result is inconclusive; the next run must keep a real
+desktop clipboard owner event loop alive while the agent announces the grab.
+Treat that direction as unverified until the production guest image and
+agent/session integration are exercised with a real desktop clipboard owner.
 
 ## Recommendation
 
