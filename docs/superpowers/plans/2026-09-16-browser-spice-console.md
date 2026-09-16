@@ -46,12 +46,14 @@ Each module has one responsibility and is tested without the others. `bridge.py`
 
 ## Task 0: Spike. Answer the spiceproxy and clipboard questions
 
+**2026-09-16 checkpoint:** CONNECT, verified TLS, and SPICE link negotiation passed on a disposable clone, which was deleted. Authentication and live clipboard remain unverified. See [spike findings](../specs/2026-09-16-spice-spike-findings.md). The gateway needs SPICE authentication handling beyond a byte relay; do not begin Task 1 yet.
+
 **This task produces an answer, not code that ships.** Anything built is throwaway and must be labelled as such. Do not proceed to Task 1 until the findings are recorded.
 
 **Files:**
 - Create: `docs/superpowers/specs/2026-09-16-spice-spike-findings.md`
 
-- [ ] **Step 1: Determine how Proxmox exposes SPICE for a running clone**
+- [x] **Step 1: Determine how Proxmox exposes SPICE for a running clone**
 
 Set `vga` to `qxl` on a throwaway clone and request a SPICE descriptor.
 
@@ -68,13 +70,13 @@ r=s.post(f'{base}/access/ticket', data={'username':os.environ['PROXMOX_USER'],'p
 s.headers.update({'CSRFPreventionToken': r['CSRFPreventionToken']}); s.cookies.set('PVEAuthCookie', r['ticket'])
 vmid = input('running vmid: ').strip()
 d = s.post(f'{base}/nodes/{n}/qemu/{vmid}/spiceproxy', timeout=20).json()['data']
-print(json.dumps({k: ('<redacted>' if k in ('password','ticket') else v) for k,v in d.items()}, indent=2))
+print(json.dumps({k: ('<redacted>' if k in ('password','ticket','host') else v) for k,v in d.items()}, indent=2))
 "
 ```
 
 Record every key the descriptor returns, with credential values redacted.
 
-- [ ] **Step 2: Establish whether the proxy handshake can be performed**
+- [x] **Step 2: Establish whether the proxy handshake can be performed**
 
 Answer these three questions in writing:
 
@@ -86,7 +88,7 @@ Answer these three questions in writing:
 
 This decides whether SPICE still earns its cost. Connect a browser client to the throwaway clone and attempt copy and paste in both directions. Record the result plainly. If clipboard does not work, SPICE delivers only smooth graphics over noVNC, and that is a finding worth surfacing before nine more tasks are built on it.
 
-- [ ] **Step 4: Write the findings**
+- [x] **Step 4: Write the findings**
 
 Write `docs/superpowers/specs/2026-09-16-spice-spike-findings.md` stating, in order:
 
@@ -96,7 +98,7 @@ Write `docs/superpowers/specs/2026-09-16-spice-spike-findings.md` stating, in or
 - Whether clipboard works.
 - A recommendation: proceed as designed, proceed with per-clone SPICE arguments, or reconsider noVNC.
 
-- [ ] **Step 5: Destroy the throwaway clone and commit the findings**
+- [x] **Step 5: Destroy the throwaway clone and commit the findings**
 
 ```bash
 git add docs/superpowers/specs/2026-09-16-spice-spike-findings.md
