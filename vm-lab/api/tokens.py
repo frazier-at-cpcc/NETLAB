@@ -8,6 +8,18 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PASSBACK_URL = "https://labapi.labsconnect.org/api/grade"
 
+# The lab-xapi installer wires its wrapper up as a bash ALIAS in the guest's
+# ~/.bashrc (`alias lab='$HOME/.local/share/lab-xapi/lab-xapi'`). Bash does not
+# expand aliases in a non-interactive shell, and every command this module
+# sends arrives over `ssh ... bash -lc ...`, which is non-interactive. Calling
+# plain `lab` there therefore resolves to Red Hat's own /usr/local/bin/lab,
+# which answers `error: unrecognized subcommand 'xapi-config'` and leaves the
+# guest with no token, no passback URL, and no session id. Address the wrapper
+# by its install path instead, so the alias is never load-bearing. The quotes
+# around $HOME survive transport intact and are expanded by the final
+# `bash -lc`, so a home directory containing spaces stays one argument.
+LAB_XAPI_WRAPPER = '"$HOME"/.local/share/lab-xapi/lab-xapi'
+
 ASSIGN_GRADE_TOKEN_SQL = (
     "UPDATE vm_sessions SET grade_token_hash = $2 WHERE session_id = $1"
 )
@@ -70,7 +82,7 @@ def nested_xapi_config_command(
     nested_user: str, nested_host: str, key: str, value: str
 ) -> str:
     inner = (
-        f"LAB_XAPI_PROVISION=1 lab xapi-config {key} "
+        f"LAB_XAPI_PROVISION=1 {LAB_XAPI_WRAPPER} xapi-config {key} "
         f"--provision {shlex.quote(value)}"
     )
     return nested_ssh_command(nested_user, nested_host, inner)
@@ -86,7 +98,7 @@ def nested_xapi_email_command(nested_user: str, nested_host: str, email: str) ->
     so it crosses a trust boundary the token/passback/session-id values
     never do; it still must be quoted, just without provisioner authority.
     """
-    inner = f"lab xapi-config email {shlex.quote(email)}"
+    inner = f"{LAB_XAPI_WRAPPER} xapi-config email {shlex.quote(email)}"
     return nested_ssh_command(nested_user, nested_host, inner)
 
 

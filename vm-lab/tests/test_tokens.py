@@ -9,6 +9,7 @@ import sys
 import pytest
 
 from api.tokens import (
+    LAB_XAPI_WRAPPER,
     GradeTokenAlreadyAssigned,
     assign_grade_token,
     get_passback_url,
@@ -100,7 +101,7 @@ def test_assign_logs_session_id_not_token(caplog):
 def test_nested_xapi_config_command_quotes_token_and_claims_provision():
     token = "abc_TOKEN-1"
     cmd = nested_xapi_config_command("student", "workstation", "token", token)
-    assert "LAB_XAPI_PROVISION=1 lab xapi-config token --provision" in cmd
+    assert "LAB_XAPI_PROVISION=1 " + LAB_XAPI_WRAPPER + " xapi-config token --provision" in cmd
     assert f"--provision {token}" in cmd
     assert cmd.startswith(
         "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null student@workstation "
@@ -136,9 +137,9 @@ def test_inject_failure_warns_without_token_or_destroy(caplog):
         )
 
     assert len(commands) == 3
-    assert "lab xapi-config token" in commands[0]
-    assert "lab xapi-config passback" in commands[1]
-    assert "lab xapi-config session-id" in commands[2]
+    assert LAB_XAPI_WRAPPER + " xapi-config token" in commands[0]
+    assert LAB_XAPI_WRAPPER + " xapi-config passback" in commands[1]
+    assert LAB_XAPI_WRAPPER + " xapi-config session-id" in commands[2]
     assert "sess-zz" in commands[2]
     assert "--provision" in commands[0]
     assert "--provision" in commands[1]
@@ -220,7 +221,16 @@ import sys
 subprocess.run(["sh", "-c", sys.argv[-1]])
 """
 
-_LAB_SHIM = f"""#!{sys.executable}
+def _lab_shim(which):
+    """A stand-in for one of the two binaries named `lab` on a real guest.
+
+    `which` is "wrapper" for the lab-xapi wrapper at its install path and
+    "redhat_lab" for Red Hat's own /usr/local/bin/lab, which is what plain
+    `lab` resolves to in a non-interactive shell. Recording which one ran
+    is the whole point: the production failure was not a quoting bug but a
+    resolution bug, and only the identity of the answering binary reveals it.
+    """
+    return f"""#!{sys.executable}
 import json
 import os
 import sys
@@ -228,6 +238,7 @@ import sys
 with open(os.environ["LAB_SHIM_OUTPUT"], "w") as f:
     json.dump(
         {{
+            "which": {which!r},
             "argv": sys.argv[1:],
             "provision_env": os.environ.get("LAB_XAPI_PROVISION"),
         }},
@@ -246,14 +257,26 @@ def _run_command_for_real(cmd, tmp_path):
     (the outer VM hop, then the nested guest hop) with `ssh` and `lab`
     replaced by shims, and return what the `lab` shim actually received.
     """
-    ssh_shim = tmp_path / "ssh"
-    lab_shim = tmp_path / "lab"
-    _write_shim(ssh_shim, _SSH_SHIM)
-    _write_shim(lab_shim, _LAB_SHIM)
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "bin"
+    wrapper_dir = home / ".local" / "share" / "lab-xapi"
+    wrapper_dir.mkdir(parents=True)
+    bin_dir.mkdir()
+
+    _write_shim(bin_dir / "ssh", _SSH_SHIM)
+
+    # Red Hat's own `lab`, reachable as bare `lab` on PATH. A guest always
+    # has this one; the wrapper is only ever reachable by its install path
+    # or through an interactive-shell alias that a `bash -lc` hop will not
+    # expand. If the generated command calls bare `lab`, THIS answers, which
+    # is exactly what happened in production.
+    _write_shim(bin_dir / "lab", _lab_shim("redhat_lab"))
+    _write_shim(wrapper_dir / "lab-xapi", _lab_shim("wrapper"))
 
     output_file = tmp_path / "lab_received.json"
     env = dict(os.environ)
-    env["PATH"] = f"{tmp_path}{os.pathsep}{env.get('PATH', '')}"
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    env["HOME"] = str(home)
     env["LAB_SHIM_OUTPUT"] = str(output_file)
     env.pop("LAB_XAPI_PROVISION", None)
 
@@ -290,6 +313,10 @@ def test_nested_xapi_config_command_survives_real_shell_layers(value, tmp_path):
 
     received = _run_command_for_real(cmd, tmp_path)
 
+    assert received["which"] == "wrapper", (
+        "bare `lab` resolved to Red Hat's binary instead of the lab-xapi "
+        "wrapper; the guest would be left with no token"
+    )
     assert received["argv"] == ["xapi-config", "token", "--provision", value]
     assert received["provision_env"] == "1"
 
@@ -315,6 +342,7 @@ def test_nested_xapi_email_command_survives_real_shell_layers(value, tmp_path):
 
     received = _run_command_for_real(cmd, tmp_path)
 
+    assert received["which"] == "wrapper"
     assert received["argv"] == ["xapi-config", "email", value]
     assert received["provision_env"] is None
 
@@ -324,7 +352,7 @@ def test_nested_xapi_email_command_never_gains_provisioner_authority():
 
     assert "--provision" not in cmd
     assert "LAB_XAPI_PROVISION" not in cmd
-    assert "lab xapi-config email student@example.edu" in cmd
+    assert LAB_XAPI_WRAPPER + " xapi-config email student@example.edu" in cmd
 
 
 def test_inject_success_logs_session_id_not_token(caplog):
@@ -354,5 +382,8 @@ def test_inject_success_logs_session_id_not_token(caplog):
     assert "sess-zz" in text
     assert token not in text
     assert "WARNING" not in [r.levelname for r in caplog.records]
-    assert any("lab xapi-config session-id" in cmd and "sess-zz" in cmd for cmd in commands)
+    assert any(
+        LAB_XAPI_WRAPPER + " xapi-config session-id" in cmd and "sess-zz" in cmd
+        for cmd in commands
+    )
     assert token not in "".join(commands[2:])
