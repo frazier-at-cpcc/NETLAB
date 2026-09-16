@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from api.lrs_client import fetch_statements, graded_lesson_statements, parse_stored
+from api.lrs_client import LrsQueryError, fetch_statements, graded_lesson_statements, parse_stored
 
 CUTOFF = datetime(2026, 9, 15, tzinfo=timezone.utc)
 
@@ -112,6 +112,71 @@ def test_drops_a_score_missing_the_scaled_key():
     s = _stmt()
     s["result"] = {"score": {"raw": 5, "min": 0, "max": 5}}
     assert graded_lesson_statements({"statements": [s]}, "cli-review", CUTOFF) == []
+
+
+# --- ITEM 1 / ITEM 5: scaled alone is not a deliverable score ----------
+#
+# xAPI 1.0.3 only requires `scaled`. A statement carrying just `{"scaled":
+# 1.0}` used to be admitted here and then read at the delivery site with
+# `score.get("raw", 0)` / `score.get("max", 1)`, writing a literal zero
+# into a real gradebook for a student who may have scored full marks.
+# The fix moves the requirement here: every eligibility rule lives in one
+# function, and a statement that cannot produce a real score is dropped
+# like any other malformed record.
+
+
+def test_drops_a_score_missing_raw_even_with_scaled_present():
+    s = _stmt()
+    s["result"]["score"].pop("raw")
+    assert graded_lesson_statements({"statements": [s]}, "cli-review", CUTOFF) == []
+
+
+def test_drops_a_score_missing_max_even_with_scaled_present():
+    s = _stmt()
+    s["result"]["score"].pop("max")
+    assert graded_lesson_statements({"statements": [s]}, "cli-review", CUTOFF) == []
+
+
+def test_drops_a_score_with_a_null_max():
+    """The exact malformed shape from the review: scaled and raw present,
+    max explicitly null. Before the fix this reached
+    Decimal(str(None)) downstream and raised decimal.InvalidOperation
+    from inside attempt_backfill's generic exception handler, which
+    retries identically on every future launch forever. Dropping it here
+    means it never reaches that code at all."""
+    s = _stmt()
+    s["result"]["score"]["max"] = None
+    assert graded_lesson_statements({"statements": [s]}, "cli-review", CUTOFF) == []
+
+
+def test_drops_a_score_with_a_null_raw():
+    s = _stmt()
+    s["result"]["score"]["raw"] = None
+    assert graded_lesson_statements({"statements": [s]}, "cli-review", CUTOFF) == []
+
+
+def test_drops_a_score_with_a_non_numeric_raw():
+    s = _stmt()
+    s["result"]["score"]["raw"] = "five"
+    assert graded_lesson_statements({"statements": [s]}, "cli-review", CUTOFF) == []
+
+
+def test_drops_a_score_with_a_non_numeric_max():
+    s = _stmt()
+    s["result"]["score"]["max"] = "ten"
+    assert graded_lesson_statements({"statements": [s]}, "cli-review", CUTOFF) == []
+
+
+def test_drops_a_scaled_only_statement_with_no_raw_or_max_at_all():
+    s = _stmt()
+    s["result"] = {"score": {"scaled": 1.0}}
+    assert graded_lesson_statements({"statements": [s]}, "cli-review", CUTOFF) == []
+
+
+def test_keeps_a_normal_score_carrying_scaled_raw_and_max():
+    # Sanity check the tightened predicate doesn't over-reject the
+    # ordinary case that _stmt() already builds.
+    assert len(graded_lesson_statements({"statements": [_stmt()]}, "cli-review", CUTOFF)) == 1
 
 
 def test_keeps_an_incomplete_verb_that_still_carries_a_score():
@@ -290,9 +355,60 @@ def test_fetch_statements_respects_a_limit_override():
     assert http.calls[0]["params"]["limit"] == 10
 
 
-def test_fetch_statements_returns_an_empty_envelope_on_a_non_200():
-    http = FakeHttp(status_code=503, payload={"error": "unavailable"})
-    result = asyncio.run(
+def test_fetch_statements_raises_on_a_non_200_instead_of_returning_an_empty_envelope(caplog):
+    """ITEM 2: an empty envelope is indistinguishable from a real 'this
+    student has no history' answer. attempt_backfill treats an empty
+    result as license to stamp backfill_attempted_at forever, so
+    swallowing a 401/500/503 into {"statements": []} would permanently
+    burn a cohort's one attempt each on a revoked or rotated credential.
+    Raising instead lets attempt_backfill's existing network-error
+    handling -- which already leaves a cell unmarked for retry -- catch
+    an HTTP failure the same way, since it is frequently the same root
+    cause. The status code is logged at WARNING; the credential never is.
+    """
+    http = FakeHttp(status_code=401, payload={"error": "unauthorized"})
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(LrsQueryError) as excinfo:
+            asyncio.run(
+                fetch_statements(
+                    http,
+                    base_url="https://lrs.example",
+                    auth="super-secret-basic-token",
+                    agent_mbox="mailto:a@email.cpcc.edu",
+                    activity="https://training.redhat.com/labs/cli-review",
+                )
+            )
+
+    assert excinfo.value.status_code == 401
+    assert "401" in caplog.text
+    assert "super-secret-basic-token" not in caplog.text
+
+
+def test_fetch_statements_passes_until_matching_the_cutoff_when_given():
+    """ITEM 6: passing xAPI's `until` parameter filters on `stored`
+    server-side, enforcing the freshness bound at the store itself,
+    keeping eligible statements on the first page, and reducing
+    transfer. The local strict comparison in graded_lesson_statements
+    stays the authority because `until` is inclusive."""
+    http = FakeHttp()
+    cutoff = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    asyncio.run(
+        fetch_statements(
+            http,
+            base_url="https://lrs.example",
+            auth="x",
+            agent_mbox="mailto:a@email.cpcc.edu",
+            activity="https://training.redhat.com/labs/cli-review",
+            until=cutoff,
+        )
+    )
+    assert http.calls[0]["params"]["until"] == cutoff.isoformat()
+
+
+def test_fetch_statements_omits_until_when_not_given():
+    http = FakeHttp()
+    asyncio.run(
         fetch_statements(
             http,
             base_url="https://lrs.example",
@@ -301,7 +417,7 @@ def test_fetch_statements_returns_an_empty_envelope_on_a_non_200():
             activity="https://training.redhat.com/labs/cli-review",
         )
     )
-    assert result == {"statements": []}
+    assert "until" not in http.calls[0]["params"]
 
 
 def test_fetch_statements_never_logs_the_credential(caplog):

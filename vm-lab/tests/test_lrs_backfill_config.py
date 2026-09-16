@@ -340,3 +340,93 @@ def test_config_object_is_frozen(load_api_main):
 
     with pytest.raises(TypeError):
         config["enabled"] = True
+
+
+# --- ITEM 3: the cutoff must be logged, and a future cutoff refused -----
+#
+# LRS_BACKFILL_CUTOFF=2099-01-01T00:00:00Z parses cleanly and enables the
+# feature, but silently removes the freshness bound entirely: every
+# statement a student can forge today is stored before 2099. Nothing
+# previously logged the cutoff's value, so an operator could not confirm
+# afterward which bound was actually in force.
+
+
+def test_a_future_cutoff_is_refused_exactly_like_an_unparseable_one(monkeypatch, load_api_main, caplog):
+    """Refuse, don't merely warn: a future cutoff admits every statement
+    anyone can forge today, erasing the one security control spec
+    section 4 describes. Every other invalid-cutoff case here already
+    fails off rather than warns and proceeds; treating a future cutoff
+    the same way keeps one failure discipline instead of adding a
+    second, weaker path an operator could miss."""
+    monkeypatch.setenv("LRS_BACKFILL_ENABLED", "true")
+    monkeypatch.setenv("LRS_READ_AUTH", "cmVhZG9ubHk=")
+    monkeypatch.setenv("LRS_BACKFILL_CUTOFF", "2099-01-01T00:00:00Z")
+
+    with caplog.at_level(logging.WARNING):
+        lab_api_main = load_api_main()
+
+    assert lab_api_main.BACKFILL_CONFIG["enabled"] is False
+    assert lab_api_main.BACKFILL_CONFIG["cutoff"] is None
+    assert any("2099-01-01" in record.message for record in caplog.records)
+
+
+def test_a_cutoff_equal_to_now_is_not_treated_as_future(monkeypatch, load_api_main):
+    """The bound is "in the future", not "not in the past": a cutoff set
+    to this instant must not be spuriously refused."""
+    monkeypatch.setenv("LRS_BACKFILL_ENABLED", "true")
+    monkeypatch.setenv("LRS_READ_AUTH", "cmVhZG9ubHk=")
+    monkeypatch.setenv("LRS_BACKFILL_CUTOFF", "2020-01-01T00:00:00Z")
+
+    lab_api_main = load_api_main()
+
+    assert lab_api_main.BACKFILL_CONFIG["cutoff"] == datetime(2020, 1, 1, tzinfo=timezone.utc)
+    assert lab_api_main.BACKFILL_CONFIG["enabled"] is True
+
+
+def test_startup_logs_the_enabled_state_and_the_cutoff_value_together(monkeypatch, load_api_main, caplog):
+    """The cutoff is not sensitive. An operator must be able to confirm
+    after the fact which bound was in force, so it is logged at startup
+    alongside the enabled state -- not just on the failure paths above."""
+    monkeypatch.setenv("LRS_BACKFILL_ENABLED", "true")
+    monkeypatch.setenv("LRS_READ_AUTH", "cmVhZG9ubHk=")
+    monkeypatch.setenv("LRS_BACKFILL_CUTOFF", "2026-09-15T00:00:00Z")
+
+    with caplog.at_level(logging.INFO):
+        load_api_main()
+
+    assert any(
+        "enabled=True" in record.message and "2026-09-15" in record.message
+        for record in caplog.records
+    )
+
+
+def test_startup_log_reports_disabled_and_no_cutoff_when_unconfigured(monkeypatch, load_api_main, caplog):
+    with caplog.at_level(logging.INFO):
+        load_api_main()
+
+    assert any("enabled=False" in record.message for record in caplog.records)
+
+
+# --- ITEM 7b: an explicitly empty LRS_BACKFILL_DOMAINS is unset, not an -
+# --- empty list -----------------------------------------------------------
+#
+# os.getenv(name, default) only applies the default when the variable is
+# unset entirely. LRS_BACKFILL_DOMAINS="" is set, just empty, so the old
+# code took that branch and produced [] instead of the documented
+# default list, silently losing all cross-domain pooling.
+
+
+def test_empty_domains_env_var_falls_back_to_the_default_list(monkeypatch, load_api_main):
+    monkeypatch.setenv("LRS_BACKFILL_DOMAINS", "")
+
+    lab_api_main = load_api_main()
+
+    assert lab_api_main.load_backfill_config()["domains"] == DEFAULT_DOMAINS
+
+
+def test_whitespace_only_domains_env_var_also_falls_back_to_the_default(monkeypatch, load_api_main):
+    monkeypatch.setenv("LRS_BACKFILL_DOMAINS", "   ")
+
+    lab_api_main = load_api_main()
+
+    assert lab_api_main.load_backfill_config()["domains"] == DEFAULT_DOMAINS

@@ -20,7 +20,7 @@ import re
 import ipaddress
 from typing import Optional, List
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import MappingProxyType
 
@@ -222,15 +222,48 @@ def load_backfill_config():
         logger.warning("LRS backfill disabled: LRS_BACKFILL_CUTOFF is not set")
     else:
         try:
-            cutoff = parse_stored(raw_cutoff)
+            parsed_cutoff = parse_stored(raw_cutoff)
         except (ValueError, TypeError):
             logger.warning("LRS backfill disabled: LRS_BACKFILL_CUTOFF is not a valid ISO instant")
-            cutoff = None
+            parsed_cutoff = None
+        if parsed_cutoff is not None:
+            # A cutoff in the future admits every statement anyone can
+            # forge today, which erases the one security control this
+            # feature has (spec section 4: `stored` cannot be forged, but
+            # a cutoff that is never exceeded stops mattering). Every
+            # other invalid-cutoff case above already fails off rather
+            # than warns and proceeds; refusing here too keeps a single
+            # failure discipline instead of a second, weaker one an
+            # operator could miss in an alert flood.
+            if parsed_cutoff > datetime.now(timezone.utc):
+                logger.warning(
+                    "LRS backfill disabled: LRS_BACKFILL_CUTOFF %s is in the future",
+                    parsed_cutoff.isoformat(),
+                )
+            else:
+                cutoff = parsed_cutoff
 
-    domains_raw = os.getenv("LRS_BACKFILL_DOMAINS", _LRS_BACKFILL_DEFAULT_DOMAINS)
+    domains_raw = os.getenv("LRS_BACKFILL_DOMAINS", "").strip()
+    if not domains_raw:
+        # os.getenv(name, default) only applies `default` when the
+        # variable is unset entirely. LRS_BACKFILL_DOMAINS="" is set, just
+        # empty, so without this an operator who explicitly clears the
+        # variable gets [] instead of the documented default list,
+        # silently losing all cross-domain pooling.
+        domains_raw = _LRS_BACKFILL_DEFAULT_DOMAINS
     domains = [d.strip() for d in domains_raw.split(",") if d.strip()]
 
     enabled = enabled_flag and bool(auth) and cutoff is not None
+
+    # The cutoff is not sensitive, unlike the credential. Logging it here,
+    # alongside the enabled state, at every startup regardless of outcome,
+    # is what lets an operator confirm afterward which bound was actually
+    # in force -- the gap named in the review.
+    logger.info(
+        "LRS backfill config: enabled=%s cutoff=%s",
+        enabled,
+        cutoff.isoformat() if cutoff is not None else None,
+    )
 
     return MappingProxyType(
         {

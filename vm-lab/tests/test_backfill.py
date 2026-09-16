@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import logging
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ import httpx
 import pytest
 
 from api.backfill import attempt_backfill, candidate_mboxes, best_statement
+from api.lrs_client import LrsQueryError
 
 DOMAINS = ["email.cpcc.edu", "lab.cpcc.edu", "email.edu.cpcc", "cpcc.email.edu", "cpcc.edu"]
 
@@ -34,7 +36,7 @@ class _AsyncCM:
         return False
 
 
-def _statement(statement_id, *, scaled, raw, max_, stored, slug=SLUG):
+def _statement(statement_id, *, scaled, raw, max_, stored, slug=SLUG, actor_mbox=None):
     return {
         "id": statement_id,
         "object": {
@@ -43,15 +45,22 @@ def _statement(statement_id, *, scaled, raw, max_, stored, slug=SLUG):
         },
         "result": {"score": {"scaled": scaled, "raw": raw, "max": max_}},
         "stored": stored,
+        "actor": {"mbox": actor_mbox or USER_MBOX},
     }
 
 
 class FakeLrsHttp:
-    """Fake xAPI store client for fetch_statements. Keyed by exact mbox."""
+    """Fake xAPI store client for fetch_statements. Keyed by exact mbox.
 
-    def __init__(self, statements_by_mbox=None, error=None):
+    `status_code` simulates the store's own HTTP answer, so a non-200
+    passes through the real fetch_statements (never mocked out here) and
+    exercises its actual failure-signalling behaviour (ITEM 2).
+    """
+
+    def __init__(self, statements_by_mbox=None, error=None, status_code=200):
         self.statements_by_mbox = statements_by_mbox or {}
         self.error = error
+        self.status_code = status_code
         self.calls = []
 
     async def get(self, url, *, params=None, headers=None):
@@ -61,7 +70,61 @@ class FakeLrsHttp:
         agent_json = (params or {}).get("agent", "{}")
         mbox = json.loads(agent_json).get("mbox")
         statements = self.statements_by_mbox.get(mbox, [])
-        return SimpleNamespace(status_code=200, json=lambda: {"statements": list(statements)})
+        return SimpleNamespace(
+            status_code=self.status_code, json=lambda: {"statements": list(statements)}
+        )
+
+
+class RaceConditionHttp(FakeLrsHttp):
+    """Inserts a competing grade event into `db` during the first store
+    call, simulating a token grade committing while attempt_backfill's
+    slow LRS query is still in flight (ITEM 7c)."""
+
+    def __init__(self, db, cell_id, statements_by_mbox=None, error=None, status_code=200):
+        super().__init__(statements_by_mbox=statements_by_mbox, error=error, status_code=status_code)
+        self._db = db
+        self._cell_id = cell_id
+        self._injected = False
+
+    async def get(self, url, *, params=None, headers=None):
+        if not self._injected:
+            self._injected = True
+            self._db.add_grade_event(self._cell_id, provenance="token")
+        return await super().get(url, params=params, headers=headers)
+
+
+class _TransactionCM:
+    """ITEM 8: gives BackfillStubPool a real rollback.
+
+    Snapshots cells, grade_events, deliveries and the event-id counter on
+    enter; if the `async with` block exits with an exception, restores
+    all four so the failed transaction leaves no trace, matching what a
+    real `conn.transaction()` does. Without this, removing the
+    `async with conn.transaction():` wrapper from attempt_backfill left
+    every test passing, because the stub had nothing to roll back.
+    """
+
+    def __init__(self, pool):
+        self._pool = pool
+        self._snapshot = None
+
+    async def __aenter__(self):
+        self._snapshot = (
+            copy.deepcopy(self._pool.cells),
+            copy.deepcopy(self._pool.grade_events),
+            copy.deepcopy(self._pool.deliveries),
+            self._pool._next_event_id,
+        )
+        return self._pool
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            cells, grade_events, deliveries, next_event_id = self._snapshot
+            self._pool.cells = cells
+            self._pool.grade_events = grade_events
+            self._pool.deliveries = deliveries
+            self._pool._next_event_id = next_event_id
+        return False
 
 
 class BackfillStubPool:
@@ -75,6 +138,9 @@ class BackfillStubPool:
         self._next_event_id = 1
         self.acquired = 0
         self.transactions = 0
+        # ITEM 8 test hook: raise between the grade_events insert and the
+        # grade_deliveries insert, to prove the transaction wrapper matters.
+        self.fail_before_delivery_insert = False
 
     def add_cell(
         self,
@@ -106,7 +172,7 @@ class BackfillStubPool:
 
     def transaction(self):
         self.transactions += 1
-        return _AsyncCM(self)
+        return _TransactionCM(self)
 
     async def fetchrow(self, sql, *args):
         self.calls.append(("fetchrow", sql, args))
@@ -148,6 +214,8 @@ class BackfillStubPool:
         self.calls.append(("execute", sql, args))
         sql_n = " ".join(sql.split())
         if "INSERT INTO grade_deliveries" in sql_n:
+            if self.fail_before_delivery_insert:
+                raise RuntimeError("simulated failure between event insert and delivery insert")
             self.deliveries.append(dict(event_id=args[0], cell_id=args[1], state="PENDING"))
             return "INSERT 0 1"
         if "UPDATE grade_cells" in sql_n and "backfill_attempted_at" in sql_n:
@@ -266,7 +334,9 @@ def test_two_statements_under_two_domains_pool_and_deliver_the_higher_one():
     db = BackfillStubPool()
     db.add_cell()
     low = _statement("stmt-low", scaled=0.4, raw=4, max_=10, stored="2026-08-01T00:00:00Z")
-    high = _statement("stmt-high", scaled=0.9, raw=9, max_=10, stored="2026-08-15T00:00:00Z")
+    high = _statement(
+        "stmt-high", scaled=0.9, raw=9, max_=10, stored="2026-08-15T00:00:00Z", actor_mbox=SECOND_MBOX
+    )
     http = FakeLrsHttp(statements_by_mbox={USER_MBOX: [low], SECOND_MBOX: [high]})
 
     before = datetime.now(timezone.utc)
@@ -370,3 +440,227 @@ def test_transient_store_error_leaves_the_attempt_open_for_a_later_launch(caplog
 
     assert result == "delivered"
     assert db.cells[CELL_ID]["backfill_attempted_at"] is not None
+
+
+# --- ITEM 2: a non-200 must be treated like a network error, not like ---
+# --- "no history" -------------------------------------------------------
+
+
+def test_a_non_200_from_the_store_leaves_the_attempt_open_for_a_later_launch(caplog):
+    """Before the fix, fetch_statements swallowed any non-200 into
+    {"statements": []}, so a revoked or rotated read credential produced
+    a clean log full of `no_history` for an entire cohort and
+    permanently consumed every cell's one attempt. This proves a 401
+    is now treated exactly like the network-error case above: the cell
+    stays unmarked and the exception propagates loudly."""
+    db = BackfillStubPool()
+    db.add_cell()
+    http = FakeLrsHttp(status_code=401)
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(LrsQueryError):
+            _attempt(db, http)
+
+    assert db.cells[CELL_ID]["backfill_attempted_at"] is None
+    assert db.grade_events == []
+    assert db.deliveries == []
+    text = "\n".join(record.getMessage() for record in caplog.records)
+    assert AUTH not in text
+    assert "401" in text
+
+
+# --- ITEM 1 / ITEM 5: end-to-end -- a malformed score never reaches -----
+# --- the gradebook, and never crashes the worker either ------------------
+
+
+def test_a_scaled_only_statement_is_never_delivered_as_a_zero_grade():
+    """The dangerous case named in the review: a legitimate xAPI 1.0.3
+    statement carrying only the required `scaled` field. Before the
+    fix, Decimal(str(score.get("raw", 0))) would have delivered a
+    literal zero for a student who may have scored full marks."""
+    db = BackfillStubPool()
+    db.add_cell()
+    scaled_only = {
+        "id": "stmt-scaled-only",
+        "object": {
+            "id": f"https://training.redhat.com/labs/{SLUG}",
+            "definition": {"type": "http://adlnet.gov/expapi/activities/lesson"},
+        },
+        "result": {"score": {"scaled": 1.0}},
+        "stored": "2026-08-20T00:00:00Z",
+        "actor": {"mbox": USER_MBOX},
+    }
+    http = FakeLrsHttp(statements_by_mbox={USER_MBOX: [scaled_only]})
+
+    result = _attempt(db, http)
+
+    assert result == "no_history"
+    assert db.grade_events == []
+    assert db.deliveries == []
+
+
+def test_a_null_max_drops_the_statement_instead_of_raising_decimal_invalid_operation():
+    """The exact malformed shape from the review:
+    {"scaled": 1.0, "raw": 5, "max": None}. Before the fix this reached
+    Decimal(str(None)), raised decimal.InvalidOperation inside the
+    generic exception handler, and retried identically on every future
+    launch forever. It must instead be dropped like any other malformed
+    record and resolve to no_history."""
+    db = BackfillStubPool()
+    db.add_cell()
+    null_max = {
+        "id": "stmt-null-max",
+        "object": {
+            "id": f"https://training.redhat.com/labs/{SLUG}",
+            "definition": {"type": "http://adlnet.gov/expapi/activities/lesson"},
+        },
+        "result": {"score": {"scaled": 1.0, "raw": 5, "max": None}},
+        "stored": "2026-08-20T00:00:00Z",
+        "actor": {"mbox": USER_MBOX},
+    }
+    http = FakeLrsHttp(statements_by_mbox={USER_MBOX: [null_max]})
+
+    result = _attempt(db, http)
+
+    assert result == "no_history"
+    assert db.grade_events == []
+    assert db.deliveries == []
+
+
+# --- ITEM 4: the institution boundary is enforced in code, not just -----
+# --- trusted to the store's `agent` filter -------------------------------
+
+
+def test_a_statement_whose_actor_does_not_match_the_queried_mbox_is_dropped():
+    """Simulates a store, endpoint, or proxy that stops honouring the
+    `agent` query filter: the response to a query for USER_MBOX comes
+    back carrying a statement that actually belongs to a student at a
+    different institution sharing this store. Without checking the
+    actor, this would be pooled and delivered as the winning score --
+    handing one college's student the other's grade."""
+    db = BackfillStubPool()
+    db.add_cell()
+    wrong_actor = _statement(
+        "stmt-wrong-actor",
+        scaled=1.0,
+        raw=10,
+        max_=10,
+        stored="2026-08-20T00:00:00Z",
+        actor_mbox="mailto:other-student@lancers.lenoircc.edu",
+    )
+    http = FakeLrsHttp(statements_by_mbox={USER_MBOX: [wrong_actor]})
+
+    result = _attempt(db, http)
+
+    assert result == "no_history"
+    assert db.grade_events == []
+    assert db.deliveries == []
+
+
+def test_pooling_ignores_a_higher_score_belonging_to_a_different_actor():
+    """A mismatched-actor statement scores higher than the legitimate
+    one under the same candidate mbox. The legitimate, lower score must
+    still win, because the higher one is not this student's."""
+    db = BackfillStubPool()
+    db.add_cell()
+    legitimate = _statement(
+        "stmt-mine", scaled=0.5, raw=5, max_=10, stored="2026-08-20T00:00:00Z"
+    )
+    someone_elses = _statement(
+        "stmt-not-mine",
+        scaled=1.0,
+        raw=10,
+        max_=10,
+        stored="2026-08-21T00:00:00Z",
+        actor_mbox="mailto:other-student@lancers.lenoircc.edu",
+    )
+    http = FakeLrsHttp(statements_by_mbox={USER_MBOX: [legitimate, someone_elses]})
+
+    result = _attempt(db, http)
+
+    assert result == "delivered"
+    assert len(db.grade_events) == 1
+    assert db.grade_events[0]["idempotency_key"] == f"backfill:{CELL_ID}:stmt-mine"
+
+
+# --- ITEM 6: the store-side `until` bound is passed on every query ------
+
+
+def test_until_param_matches_the_configured_cutoff_on_every_candidate_query():
+    db = BackfillStubPool()
+    db.add_cell()
+    http = FakeLrsHttp(statements_by_mbox={})
+
+    _attempt(db, http)
+
+    assert http.calls  # every configured candidate was queried
+    for call in http.calls:
+        assert call["params"]["until"] == CUTOFF.isoformat()
+
+
+# --- ITEM 7a: domain matching in candidate_mboxes is case-insensitive ---
+
+
+def test_domain_matching_in_candidate_mboxes_is_case_insensitive():
+    got = candidate_mboxes("Student@EMAIL.CPCC.EDU", DOMAINS)
+    # The launch address itself is always kept, in its original casing.
+    assert "mailto:Student@EMAIL.CPCC.EDU" in got
+    # Substitution still happens across every OTHER configured domain, in
+    # the domain's own configured casing, even though the input domain
+    # was uppercase and did not literally match any entry in DOMAINS.
+    # Before the fix, an uppercase domain matched nothing and this
+    # candidate set was just the one address above.
+    assert "mailto:Student@lab.cpcc.edu" in got
+    assert "mailto:Student@email.edu.cpcc" in got
+    assert "mailto:Student@cpcc.email.edu" in got
+    assert "mailto:Student@cpcc.edu" in got
+
+
+# --- ITEM 7c: the existing-grade-event guard is re-run right before -----
+# --- the insert, closing the race with a slow store query ----------------
+
+
+def test_a_token_grade_committed_during_the_store_query_wins_the_race():
+    """A token grade can commit between the first has_grades check (run
+    before any store query) and the insert. Spec section 3's guard --
+    a student already graded through the token channel is never
+    overwritten by history -- must hold even when the race lands in
+    that window, not just at the start of the attempt."""
+    db = BackfillStubPool()
+    db.add_cell()
+    statement = _statement("stmt-race", scaled=0.9, raw=9, max_=10, stored="2026-08-20T00:00:00Z")
+    http = RaceConditionHttp(db, CELL_ID, statements_by_mbox={USER_MBOX: [statement]})
+
+    result = _attempt(db, http)
+
+    assert result == "has_grades"
+    assert len(db.grade_events) == 1
+    assert db.grade_events[0]["provenance"] == "token"
+    assert db.deliveries == []
+    assert db.cells[CELL_ID]["backfill_attempted_at"] is not None
+
+
+# --- ITEM 8: the stub's transaction() must actually roll back -----------
+
+
+def test_a_failure_between_the_two_inserts_leaves_nothing_persisted():
+    """Proves the atomicity the design depends on: a failure between the
+    grade_events insert and the grade_deliveries insert must leave no
+    committed event, no delivery, and no attempted-mark behind. Without
+    a real rollback in the stub, the grade_events insert -- which
+    mutates db.grade_events immediately, with no buffering -- would
+    survive the exception and this test would catch a design defect
+    that removing `async with conn.transaction():` from production code
+    would otherwise pass unnoticed."""
+    db = BackfillStubPool()
+    db.add_cell()
+    db.fail_before_delivery_insert = True
+    statement = _statement("stmt-atomic", scaled=0.8, raw=8, max_=10, stored="2026-08-20T00:00:00Z")
+    http = FakeLrsHttp(statements_by_mbox={USER_MBOX: [statement]})
+
+    with pytest.raises(RuntimeError):
+        _attempt(db, http)
+
+    assert db.grade_events == []
+    assert db.deliveries == []
+    assert db.cells[CELL_ID]["backfill_attempted_at"] is None

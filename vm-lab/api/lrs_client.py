@@ -16,12 +16,33 @@ months. A single malformed statement must be dropped, not allowed to
 raise and stop the rest of the batch.
 """
 
+import logging
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 LESSON_TYPE = "http://adlnet.gov/expapi/activities/lesson"
 ACTIVITY_PREFIX = "https://training.redhat.com/labs/"
 
 _STATEMENT_ERRORS = (AttributeError, TypeError, ValueError)
+
+
+class LrsQueryError(Exception):
+    """Raised by fetch_statements when the store answers a statements
+    query with a non-200 status.
+
+    Deliberately left uncaught here: letting it propagate up through
+    attempt_backfill's existing generic exception handling means an HTTP
+    failure is treated exactly like a network exception, which that
+    handler already treats as transient -- the cell is left unmarked so
+    the next launch retries, rather than being permanently consumed. A
+    revoked, rotated, or wrong read credential is frequently the root
+    cause of both. See api/backfill.py's module docstring.
+    """
+
+    def __init__(self, status_code):
+        super().__init__(f"LRS statements query failed with HTTP {status_code}")
+        self.status_code = status_code
 
 
 def parse_stored(value: str) -> datetime:
@@ -50,6 +71,12 @@ def parse_stored(value: str) -> datetime:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _is_number(value) -> bool:
+    """True for an int or float, excluding bool (a bool is an int in
+    Python, and a score is never legitimately True/False)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def graded_lesson_statements(payload: dict, slug: str, before: datetime) -> list[dict]:
     """Return statements that are a scored lesson for this slug, stored before the bound.
 
@@ -58,8 +85,18 @@ def graded_lesson_statements(payload: dict, slug: str, before: datetime) -> list
     - its object id matches the lab activity for `slug`
     - its object definition type is a lesson, not an assessment or another
       activity type
-    - it carries a numeric `result.score.scaled` value
+    - it carries a `result.score.scaled` value, AND numeric `result.score.raw`
+      and `result.score.max` values
     - its `stored` timestamp parses and falls strictly before `before`
+
+    xAPI 1.0.3 only requires `scaled`; `raw` and `max` are optional on the
+    wire. But the caller delivers `raw`/`max` verbatim as the grade, so a
+    statement that has `scaled` without a real `raw`/`max` cannot produce
+    a real score and must be dropped here rather than admitted and given
+    a made-up default downstream -- that default is exactly what once
+    wrote a zero into a live gradebook for a student who scored full
+    marks. Every eligibility rule for this statement type lives in this
+    one function.
 
     Any statement that fails to parse, or whose shape does not match what
     the store actually emits, is dropped rather than raised. Each
@@ -79,6 +116,8 @@ def graded_lesson_statements(payload: dict, slug: str, before: datetime) -> list
             score = (statement.get("result") or {}).get("score") or {}
             if score.get("scaled") is None:
                 continue
+            if not _is_number(score.get("raw")) or not _is_number(score.get("max")):
+                continue
             stored = parse_stored(statement.get("stored", ""))
         except _STATEMENT_ERRORS:
             continue
@@ -88,7 +127,9 @@ def graded_lesson_statements(payload: dict, slug: str, before: datetime) -> list
     return kept
 
 
-async def fetch_statements(http, *, base_url, auth, agent_mbox, activity, limit=50) -> dict:
+async def fetch_statements(
+    http, *, base_url, auth, agent_mbox, activity, limit=50, until=None
+) -> dict:
     """GET one page of statements for one agent and one activity.
 
     `auth` is the pre-encoded HTTP Basic credential for this store. It is
@@ -97,19 +138,35 @@ async def fetch_statements(http, *, base_url, auth, agent_mbox, activity, limit=
     written anywhere else, because this credential lives for the whole
     store and must not leak into logs or error output.
 
-    A non-200 response is treated as no statements rather than raised,
-    since the caller runs in a background task where one page it cannot
-    fetch should not stop a backfill that spans many students.
+    `until`, when given, is passed as xAPI's `until` query parameter,
+    filtering on `stored` at the store itself. This enforces the
+    freshness bound from spec section 4 server-side, keeps eligible
+    statements on the first page, and reduces transfer. `until` is
+    inclusive on the wire, so the caller's own strict (exclusive)
+    comparison in `graded_lesson_statements` remains the authority; this
+    is an optimisation and a defence in depth, not a replacement for it.
+
+    A non-200 response raises `LrsQueryError` rather than being treated
+    as an empty result. An empty `{"statements": []}` and "the query
+    failed" must never look identical to the caller: attempt_backfill
+    treats an empty result as license to permanently mark a cell as
+    attempted, so silently swallowing a 401/500/503 here would burn a
+    whole cohort's one attempt each on a bad credential. The status code
+    is logged at WARNING; the credential is not.
     """
     agent = '{"objectType":"Agent","mbox":"%s"}' % agent_mbox
+    params = {"agent": agent, "activity": activity, "limit": limit}
+    if until is not None:
+        params["until"] = until.isoformat()
     response = await http.get(
         f"{base_url.rstrip('/')}/statements",
-        params={"agent": agent, "activity": activity, "limit": limit},
+        params=params,
         headers={
             "Authorization": f"Basic {auth}",
             "X-Experience-API-Version": "1.0.3",
         },
     )
     if response.status_code != 200:
-        return {"statements": []}
+        logger.warning("LRS statements query failed status=%s", response.status_code)
+        raise LrsQueryError(response.status_code)
     return response.json()

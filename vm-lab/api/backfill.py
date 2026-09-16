@@ -76,6 +76,10 @@ def candidate_mboxes(email: str, domains: list[str]) -> list[str]:
     Substitution is by whole domain. A local part is never matched on its own,
     because a different institution shares this store and a collision would move
     a grade between colleges.
+
+    Domain matching is casefolded on both sides: an LMS-supplied address
+    like `Student@EMAIL.CPCC.EDU` must still match a lowercase entry in
+    `domains`, or it silently loses pooling across the equivalence list.
     """
     address = (email or "").strip()
     if address.count("@") != 1:
@@ -84,12 +88,38 @@ def candidate_mboxes(email: str, domains: list[str]) -> list[str]:
     if not local or not domain:
         return []
     ordered = [address]
-    if domain in domains:
+    domains_casefold = {d.casefold() for d in domains}
+    if domain.casefold() in domains_casefold:
         for candidate_domain in domains:
             candidate = f"{local}@{candidate_domain}"
             if candidate not in ordered:
                 ordered.append(candidate)
     return [f"mailto:{a}" for a in ordered]
+
+
+def _statements_for_queried_actor(statements: list[dict], mbox: str) -> list[dict]:
+    """Drop any statement whose actor.mbox does not equal the mbox that was queried.
+
+    The `agent` query parameter is the only thing standing between one
+    college's scores and another's gradebook in a store this deployment
+    shares with at least one other institution (spec section 2). A
+    measurement confirmed the store honours that filter today, but a
+    store upgrade, an endpoint change, or a proxy that strips query
+    parameters would make every query return every statement for the
+    activity, and best_statement would then hand every student the
+    highest score anyone in either college earned. Checking the actor
+    again here closes that boundary in code rather than trusting vendor
+    behaviour.
+    """
+    kept = []
+    for statement in statements:
+        try:
+            actor_mbox = (statement.get("actor") or {}).get("mbox")
+        except AttributeError:
+            continue
+        if actor_mbox == mbox:
+            kept.append(statement)
+    return kept
 
 
 def best_statement(statements: list[dict]) -> dict | None:
@@ -165,8 +195,10 @@ async def attempt_backfill(db, http, cell_id, *, config) -> str:
                         auth=config.get("auth", ""),
                         agent_mbox=mbox,
                         activity=activity,
+                        until=cutoff,
                     )
-                    all_statements.extend(graded_lesson_statements(payload, slug, cutoff))
+                    eligible = graded_lesson_statements(payload, slug, cutoff)
+                    all_statements.extend(_statements_for_queried_actor(eligible, mbox))
 
                 best = best_statement(all_statements)
                 if best is None:
@@ -174,11 +206,26 @@ async def attempt_backfill(db, http, cell_id, *, config) -> str:
                     _log_outcome(claimed_id, slug, "no_history")
                     return "no_history"
 
+                # Re-run the existing-grade-event guard immediately before
+                # the insert. The check above ran before any store query;
+                # a token grade can commit while that query is still in
+                # flight, and spec section 3's guard forbids ever
+                # overwriting it with history, including in this window.
+                raced = await conn.fetchrow(SELECT_GRADE_EVENT_SQL, claimed_id)
+                if raced is not None:
+                    await conn.execute(MARK_ATTEMPTED_SQL, claimed_id, datetime.now(timezone.utc))
+                    _log_outcome(claimed_id, slug, "has_grades")
+                    return "has_grades"
+
                 statement_id = best.get("id", "")
                 result = best.get("result") or {}
                 score = result.get("score") or {}
-                score_raw = Decimal(str(score.get("raw", 0)))
-                score_max = Decimal(str(score.get("max", 1)))
+                # graded_lesson_statements guarantees raw and max are
+                # present and numeric on every statement it admits, so no
+                # default belongs here -- a default is exactly what once
+                # wrote a fabricated zero into a real gradebook.
+                score_raw = Decimal(str(score.get("raw")))
+                score_max = Decimal(str(score.get("max")))
                 stored_str = best.get("stored", "")
                 occurred_at = parse_stored(stored_str) if stored_str else datetime.now(timezone.utc)
 
