@@ -86,10 +86,25 @@ fi
 echo "  SSH configured and enabled"
 
 # ------------------------------------------------------------------------------
+# Configure browser RDP access (optional guest-console capability)
+# ------------------------------------------------------------------------------
+echo ""
+echo "Step 5: Installing browser RDP support..."
+
+if command -v dnf >/dev/null 2>&1; then
+    dnf install -y xrdp xorgxrdp
+    systemctl enable xrdp
+    echo "  Installed and enabled xrdp/xorgxrdp"
+    echo "  Configure the desktop session and firewall for the lab network before templating"
+else
+    echo "  WARNING: dnf is unavailable; install xrdp and xorgxrdp for browser RDP manually"
+fi
+
+# ------------------------------------------------------------------------------
 # Clean up for template
 # ------------------------------------------------------------------------------
 echo ""
-echo "Step 5: Cleaning up for template use..."
+echo "Step 6: Cleaning up for template use..."
 
 # Remove SSH host keys (will be regenerated on first boot)
 rm -f /etc/ssh/ssh_host_*
