@@ -141,8 +141,9 @@ services:
       - lab-network
       - vm-network
 
-  # MVP browser RDP gateway. The access token endpoint is temporary; the lab
-  # API will replace it with per-session, one-time tokens before production.
+  # Browser RDP gateway. It holds no RDP target: a target arrives from lab-api
+  # for one connection, against one single-use reference presented by one
+  # student. See rdp-gateway/connectionStore.js for the handshake sequence.
   rdp-gateway:
     build:
       context: ./rdp-gateway
@@ -154,12 +155,10 @@ services:
       - WS_PORT=8081
       - WS_PUBLIC_URL=${WS_PUBLIC_URL:-}
       - GUACD_HOST=${GUACD_HOST:-guacd}
-      - PROTOTYPE_ACCESS_TOKEN=${PROTOTYPE_ACCESS_TOKEN}
       - GUACAMOLE_TOKEN_KEY=${GUACAMOLE_TOKEN_KEY}
-      - RDP_HOST=${RDP_HOST}
-      - RDP_PORT=${RDP_PORT:-3389}
-      - RDP_USERNAME=${RDP_USERNAME}
-      - RDP_PASSWORD=${RDP_PASSWORD}
+      - LAB_API_URL=${LAB_API_URL:-http://lab-api:8000}
+      - LAB_API_SERVICE_TOKEN=${LAB_API_SERVICE_TOKEN}
+      - HANDLE_TTL_MS=${HANDLE_TTL_MS:-30000}
     depends_on:
       - guacd
     labels:

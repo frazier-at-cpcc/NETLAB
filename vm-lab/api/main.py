@@ -47,6 +47,7 @@ try:
         parse_since,
         session_grade_summary,
     )
+    import access
     from lrs_client import parse_stored
     from pox_delivery import pox_delivery_loop
     from service_auth import SERVICE_TOKEN_HEADER, ServiceTokenError, check_service_token, service_token
@@ -71,6 +72,7 @@ except ImportError:
         parse_since,
         session_grade_summary,
     )
+    from api import access
     from api.lrs_client import parse_stored
     from api.pox_delivery import pox_delivery_loop
     from api.service_auth import SERVICE_TOKEN_HEADER, ServiceTokenError, check_service_token, service_token
@@ -303,6 +305,10 @@ class ProvisionRequest(BaseModel):
     assignment_id: Optional[str] = None
     assignment_title: Optional[str] = None
     session_hours: Optional[int] = DEFAULT_SESSION_HOURS
+
+
+class DesktopRedeemRequest(BaseModel):
+    token: str
 
 
 class GradeCellRequest(BaseModel):
@@ -1292,6 +1298,74 @@ async def post_grade(
     if payload is None:
         return Response(status_code=status_code)
     return JSONResponse(status_code=status_code, content=payload)
+
+
+@app.post(
+    "/api/access/desktop/redeem",
+    dependencies=[Depends(require_service_token)],
+)
+async def redeem_desktop_access(body: DesktopRedeemRequest):
+    """Exchange one browser reference for the private guacd parameters.
+
+    Called only by the RDP gateway, over the internal service token. The
+    reference is consumed by the statement that reads it, so a replay finds
+    nothing. Neither the reference nor the resolved password is logged, and
+    the 404 body names no target detail.
+    """
+    db = await get_db()
+
+    row = await db.fetchrow(
+        access.REDEEM_DESKTOP_TOKEN_SQL, access.hash_token(body.token)
+    )
+    if not row:
+        logger.info("Desktop access reference was not redeemable")
+        raise HTTPException(status_code=404, detail="No redeemable desktop access")
+
+    try:
+        parameters = access.connection_parameters(row)
+    except (access.InvalidRdpTarget, access.CredentialUnavailable) as exc:
+        logger.error(
+            "Desktop access record for session %s is unusable: %s",
+            row["session_id"],
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=502, detail="Desktop access is not usable"
+        ) from exc
+
+    logger.info("Redeemed desktop access for session %s", row["session_id"])
+    return {
+        "session_id": row["session_id"],
+        "protocol": "rdp",
+        "parameters": parameters,
+    }
+
+
+@app.post(
+    "/api/session/{session_id}/desktop/token",
+    dependencies=[Depends(require_service_token)],
+)
+async def mint_desktop_access(session_id: str, ttl_seconds: int = 60):
+    """Attach a fresh single-use reference to an existing desktop record.
+
+    The lti-server calls this for a student whose signed launch cookie names
+    the session. Only the hash is stored, so this response is the one and
+    only time the reference exists outside the browser.
+    """
+    db = await get_db()
+
+    token = access.mint_desktop_token()
+    row = await db.fetchrow(
+        access.ASSIGN_DESKTOP_TOKEN_SQL,
+        session_id,
+        access.hash_token(token),
+        str(ttl_seconds),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="No desktop access for session")
+
+    logger.info("Minted desktop access reference for session %s", session_id)
+    return {"token": token, "expires_in": ttl_seconds}
 
 
 @app.get("/api/grade-events", dependencies=[Depends(require_service_token)])

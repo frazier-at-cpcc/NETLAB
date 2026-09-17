@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS vm_session_access (
     -- Private target. Reachable only from the gateway to guacd.
     rdp_host VARCHAR(45),
     rdp_port INTEGER,
+    rdp_username VARCHAR(64),
+    rdp_security VARCHAR(8),
     credential_ref TEXT,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -38,6 +40,11 @@ CREATE TABLE IF NOT EXISTS vm_session_access (
     CONSTRAINT valid_access_mode CHECK (mode IN ('terminal', 'desktop')),
     CONSTRAINT valid_access_rdp_port
       CHECK (rdp_port IS NULL OR rdp_port BETWEEN 1 AND 65535),
+    -- RHEL GNOME Remote Desktop negotiates TLS. Windows uses NLA. The mode
+    -- belongs to the image, so it is stored per record rather than fixed
+    -- once for the whole deployment.
+    CONSTRAINT valid_access_rdp_security
+      CHECK (rdp_security IS NULL OR rdp_security IN ('nla', 'tls', 'any')),
     UNIQUE (session_id, mode)
 );
 
