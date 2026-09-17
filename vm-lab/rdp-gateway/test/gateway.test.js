@@ -138,3 +138,19 @@ test('a response without a target is refused rather than passed to guacd', async
     (error) => error.status === 502,
   );
 });
+
+test('the client page presents the reference the server expects', () => {
+  const fs = require('node:fs');
+  const page = fs.readFileSync(`${__dirname}/../public/index.html`, 'utf8');
+
+  assert.match(page, /get\('ref'\)/);
+  assert.match(page, /\/api\/token\?ref=/);
+  assert.ok(!page.includes('?access='), 'the prototype access parameter is gone');
+});
+
+test('the client page drops the reference from the address bar', () => {
+  const fs = require('node:fs');
+  const page = fs.readFileSync(`${__dirname}/../public/index.html`, 'utf8');
+
+  assert.match(page, /history\.replaceState/);
+});

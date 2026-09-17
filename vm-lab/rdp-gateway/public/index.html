@@ -6,10 +6,14 @@
 <script type="module">
 import Guacamole from './guacamole-common.js';
 const status = document.querySelector('#status');
-const access = new URLSearchParams(location.search).get('access');
-if (!access) { status.textContent = 'Missing access token'; throw new Error('missing access token'); }
-const response = await fetch(`/api/token?access=${encodeURIComponent(access)}`);
-if (!response.ok) { status.textContent = 'Unauthorized'; throw new Error('unauthorized'); }
+// The launch page sends the student here with one single-use reference. It
+// is exchanged immediately and is not kept, so a reload needs a fresh one
+// from the launch page rather than a replay of this value.
+const reference = new URLSearchParams(location.search).get('ref');
+if (!reference) { status.textContent = 'This desktop link is missing its reference. Reopen it from your lab page.'; throw new Error('missing reference'); }
+const response = await fetch(`/api/token?ref=${encodeURIComponent(reference)}`);
+if (!response.ok) { status.textContent = 'This desktop link has expired or was already used. Reopen it from your lab page.'; throw new Error('unavailable'); }
+history.replaceState(null, '', location.pathname);
 const { token, websocket } = await response.json();
 const tunnel = new Guacamole.WebSocketTunnel(websocket);
 const client = new Guacamole.Client(tunnel);
