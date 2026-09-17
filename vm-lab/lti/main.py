@@ -56,6 +56,8 @@ logger = logging.getLogger(__name__)
 ORCHESTRATOR_API = os.getenv("ORCHESTRATOR_API", "http://lab-api:8000")
 DOMAIN = os.getenv("DOMAIN", "lab.yourdomain.com")
 LTI_BASE_URL = os.getenv("LTI_BASE_URL", "https://lti.yourdomain.com")
+RDP_GATEWAY_URL = os.getenv("RDP_GATEWAY_URL", "")
+DESKTOP_TOKEN_TTL_SECONDS = int(os.getenv("DESKTOP_TOKEN_TTL_SECONDS", "60"))
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://lti:lti@localhost:5432/lti")
 _RAW_SESSION_SECRET = os.getenv("SESSION_SECRET")
 if _RAW_SESSION_SECRET == "":
@@ -1247,6 +1249,76 @@ async def get_my_grades(request: Request):
     return JSONResponse(content={"grades": body.get("grades", [])})
 
 
+@app.post("/api/my-desktop")
+async def mint_my_desktop(request: Request):
+    """
+    Hand the signed-in student one single-use reference to their own desktop.
+
+    Takes no parameter. session_id comes only from request.session, which
+    Starlette derives from the signed lti_session cookie set at launch;
+    nothing supplied by the client -- not a query parameter, not a path
+    segment, not a header, not a body field -- is ever read here. This is the
+    same rule GET /api/my-grades holds, and it matters more here, because the
+    value returned opens an interactive desktop rather than listing scores.
+
+    It is a separate route, and not part of the session status payload,
+    because that payload is relayed by an unauthenticated proxy whose only
+    credential is an eight-character session id.
+
+    The reference travels in the returned URL so the page can open it in a new
+    tab, which a GET navigation requires. It is therefore visible in browser
+    history. The mitigation is its lifetime: it is single-use and expires in
+    DESKTOP_TOKEN_TTL_SECONDS, so a value recovered from history later is
+    already spent or stale.
+    """
+    session_id = request.session.get('current_session_id')
+    if not session_id:
+        raise HTTPException(status_code=403, detail="No launch session")
+
+    if not RDP_GATEWAY_URL:
+        logger.error("RDP_GATEWAY_URL is not configured on the LTI server")
+        raise HTTPException(status_code=503, detail="Desktop access unavailable")
+
+    headers = service_headers()
+    if not headers:
+        logger.error(
+            "LAB_API_SERVICE_TOKEN is not configured on the LTI server; "
+            "POST /api/my-desktop will be refused by lab-api"
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{ORCHESTRATOR_API}/api/session/{session_id}/desktop/token",
+                headers=headers,
+                params={"ttl_seconds": DESKTOP_TOKEN_TTL_SECONDS},
+            )
+            if response.status_code == 404:
+                raise HTTPException(
+                    status_code=409, detail="No desktop for this session"
+                )
+            response.raise_for_status()
+            body = response.json()
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError) as e:
+        # The upstream detail is deliberately dropped. It names lab-api and,
+        # on some failures, the session.
+        logger.warning(
+            "desktop mint failed for session %s: %s", session_id, type(e).__name__
+        )
+        raise HTTPException(status_code=503, detail="Desktop access unavailable")
+
+    reference = body.get("token")
+    if not reference:
+        raise HTTPException(status_code=503, detail="Desktop access unavailable")
+
+    return JSONResponse(content={
+        "url": f"{RDP_GATEWAY_URL}/?ref={urllib.parse.quote(reference, safe='')}",
+        "expires_in": body.get("expires_in", DESKTOP_TOKEN_TTL_SECONDS),
+    })
+
+
 @app.post("/api/provision")
 async def provision_student_vm(request: Request):
     """
@@ -1319,7 +1391,8 @@ async def provision_student_vm(request: Request):
             return JSONResponse(content={
                 "status": "starting",
                 "session_id": session_id,
-                "url": session_data.get('url')
+                "url": session_data.get('url'),
+                "access": session_data.get('access'),
             })
 
         except httpx.RequestError as e:
@@ -1430,7 +1503,8 @@ async def recreate_student_session(request: Request, session_id: str):
             return JSONResponse(content={
                 "status": "recreating",
                 "session_id": new_session_id,
-                "url": session_data.get('url')
+                "url": session_data.get('url'),
+                "access": session_data.get('access'),
             })
 
         except httpx.RequestError as e:

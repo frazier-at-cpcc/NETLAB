@@ -27,6 +27,8 @@ services:
     environment:
       - ORCHESTRATOR_API=http://lab-api:8000
       - LAB_API_SERVICE_TOKEN=${LAB_API_SERVICE_TOKEN}
+      - RDP_GATEWAY_URL=${RDP_GATEWAY_URL:-}
+      - DESKTOP_TOKEN_TTL_SECONDS=${DESKTOP_TOKEN_TTL_SECONDS:-60}
       - LTI_BASE_URL=${LTI_BASE_URL}
       - DOMAIN=${DOMAIN}
       - DATABASE_URL=postgresql://lti:${LTI_DB_PASS}@postgres:5432/lti

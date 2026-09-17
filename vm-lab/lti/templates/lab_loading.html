@@ -273,11 +273,18 @@
                             </div>
                         </div>
 
-                        <!-- Primary Action -->
-                        <a href="#" id="open-terminal-btn" target="_blank"
-                           class="block w-full py-4 bg-gradient-to-r from-cpcc-primary to-cpcc-dark text-white font-bold text-center rounded-xl hover:shadow-lg hover:scale-[1.02] transition-all duration-200">
-                            Open Terminal
-                        </a>
+                        <!-- Primary Actions -->
+                        <div class="space-y-2">
+                            <a href="#" id="open-terminal-btn" target="_blank"
+                               class="block w-full py-4 bg-gradient-to-r from-cpcc-primary to-cpcc-dark text-white font-bold text-center rounded-xl hover:shadow-lg hover:scale-[1.02] transition-all duration-200">
+                                Open Terminal
+                            </a>
+                            <button type="button" id="open-desktop-btn" onclick="openDesktop()" disabled
+                                    class="block w-full py-4 bg-white text-cpcc-dark font-bold text-center rounded-xl border-2 border-cpcc-primary hover:shadow-lg hover:scale-[1.02] transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:shadow-none disabled:hover:scale-100">
+                                Open Desktop
+                            </button>
+                            <p id="desktop-note" class="text-xs text-slate-500 text-center"></p>
+                        </div>
 
                         <!-- Secondary Actions -->
                         <div class="flex gap-3">
@@ -571,6 +578,7 @@
             if (data.ready && data.url) {
                 showState('running');
                 document.getElementById('open-terminal-btn').href = data.url;
+                applyDesktopAccess(data.access);
                 stopPolling();
                 return;
             }
@@ -744,6 +752,64 @@
         document.getElementById('confirm-modal').addEventListener('click', function(e) {
             if (e.target === this) closeModal();
         });
+
+        // Desktop access. The status payload says only whether a desktop
+        // exists; the reference that opens it is minted by a separate route
+        // that reads the session from the signed launch cookie.
+        const DESKTOP_NOTES = {
+            disabled: 'Desktop access is not enabled for this lab.',
+            pending: 'Desktop is still preparing.',
+            not_provisioned: 'Desktop is unavailable for this lab image.',
+        };
+
+        function applyDesktopAccess(accessMap) {
+            const button = document.getElementById('open-desktop-btn');
+            const note = document.getElementById('desktop-note');
+            if (!button || !note) return;
+
+            const desktop = (accessMap && accessMap.desktop) || {};
+            if (desktop.available) {
+                button.disabled = false;
+                note.textContent = '';
+                return;
+            }
+
+            button.disabled = true;
+            note.textContent = DESKTOP_NOTES[desktop.reason] || 'Desktop is unavailable.';
+        }
+
+        async function openDesktop() {
+            const button = document.getElementById('open-desktop-btn');
+            const note = document.getElementById('desktop-note');
+
+            // Opened synchronously on the click, because a tab opened later
+            // from an awaited response is treated as a popup and blocked.
+            const tab = window.open('', '_blank');
+            button.disabled = true;
+            note.textContent = 'Preparing desktop...';
+
+            try {
+                const response = await fetch('/api/my-desktop', {
+                    method: 'POST',
+                    credentials: 'include',
+                });
+                if (!response.ok) throw new Error('mint failed');
+                const data = await response.json();
+                if (!data.url) throw new Error('no url');
+
+                if (tab) {
+                    tab.location = data.url;
+                } else {
+                    window.location = data.url;
+                }
+                note.textContent = '';
+            } catch (error) {
+                if (tab) tab.close();
+                note.textContent = 'Desktop could not be opened. Try again.';
+            } finally {
+                button.disabled = false;
+            }
+        }
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
