@@ -4,6 +4,7 @@ const GuacamoleLite = require('guacamole-lite');
 
 const HTTP_PORT = Number(process.env.HTTP_PORT || 8080);
 const WS_PORT = Number(process.env.WS_PORT || 8081);
+const WS_PUBLIC_URL = process.env.WS_PUBLIC_URL;
 const GUACD_HOST = process.env.GUACD_HOST || 'guacd';
 const ACCESS_TOKEN = process.env.PROTOTYPE_ACCESS_TOKEN;
 const RDP_HOST = process.env.RDP_HOST;
@@ -35,6 +36,7 @@ app.get('/api/token', (req, res) => {
   const token = encryptToken({ connection: { type: 'rdp', settings: {
     hostname: RDP_HOST, port: RDP_PORT, username: RDP_USERNAME, password: RDP_PASSWORD,
   } } });
-  res.json({ token, websocket: `${req.protocol === 'https' ? 'wss' : 'ws'}://${req.get('host')}/ws` });
+  const websocket = WS_PUBLIC_URL || `${req.protocol === 'https' ? 'wss' : 'ws'}://${req.hostname}:${WS_PORT}/`;
+  res.json({ token, websocket });
 });
 app.listen(HTTP_PORT, '0.0.0.0', () => console.log(`rdp_gateway_ready ${HTTP_PORT}/${WS_PORT}`));
