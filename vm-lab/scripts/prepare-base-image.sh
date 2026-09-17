@@ -92,10 +92,11 @@ echo ""
 echo "Step 5: Installing browser RDP support..."
 
 if command -v dnf >/dev/null 2>&1; then
-    dnf install -y xrdp xorgxrdp
-    systemctl enable xrdp
-    echo "  Installed and enabled xrdp/xorgxrdp"
-    echo "  Configure the desktop session and firewall for the lab network before templating"
+    dnf install -y gnome-remote-desktop freerdp
+    systemctl enable gdm 2>/dev/null || true
+    echo "  Installed GNOME Remote Desktop and FreeRDP tooling"
+    echo "  Configure grdctl TLS credentials, headless session, and firewall before templating"
+    echo "  For pre-RHEL 10 images, xrdp/xorgxrdp remains a supported fallback"
 else
     echo "  WARNING: dnf is unavailable; install xrdp and xorgxrdp for browser RDP manually"
 fi
