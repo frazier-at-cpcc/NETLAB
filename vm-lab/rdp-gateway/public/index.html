@@ -41,8 +41,9 @@ function fitDisplay() {
   // feeding its dimensions back into this calculation creates runaway scale.
   const width = window.innerWidth;
   const height = window.innerHeight;
-  const desktopWidth = display.getWidth();
-  const desktopHeight = display.getHeight();
+  const surface = display.getElement().querySelector('canvas');
+  const desktopWidth = surface?.width || display.getWidth();
+  const desktopHeight = surface?.height || display.getHeight();
   if (width > 0 && height > 0 && desktopWidth > 0 && desktopHeight > 0) {
     const scale = Math.min(width / desktopWidth, height / desktopHeight);
     display.scale(Math.max(scale, 0.1));
