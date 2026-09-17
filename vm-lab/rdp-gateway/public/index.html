@@ -56,7 +56,7 @@ client.connect(`token=${encodeURIComponent(token)}&width=${window.innerWidth}&he
 let fitAttempts = 0;
 const fitTimer = setInterval(() => {
   fitDisplay();
-  if (++fitAttempts >= 40 || (display.getWidth() > 0 && display.getHeight() > 0)) clearInterval(fitTimer);
+  if (++fitAttempts >= 40) clearInterval(fitTimer);
 }, 100);
 window.addEventListener('beforeunload', () => client.disconnect());
 </script>
