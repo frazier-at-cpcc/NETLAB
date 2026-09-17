@@ -28,7 +28,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, Response, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 import asyncpg
 import docker
 from proxmoxer import ProxmoxAPI
@@ -109,6 +109,13 @@ PROXMOX_TEMPLATE_ID = int(os.getenv("PROXMOX_TEMPLATE_ID", "500"))
 PROXMOX_BRIDGE = os.getenv("PROXMOX_BRIDGE", "vmbr0")
 PROXMOX_VLAN_TAG = os.getenv("PROXMOX_VLAN_TAG", "")  # Optional VLAN tag for net0; empty = use bridge native/untagged
 PROXMOX_MTU = os.getenv("PROXMOX_MTU", "")  # Optional MTU for net0; empty = Proxmox default (1500)
+
+# Browser RDP desktop access. Off by default. Phase 9 of the browser RDP plan
+# governs the rollout; nothing reads this beyond the reported access mode
+# until the gateway broker and provisioning hooks land.
+BROWSER_RDP_ENABLED = os.getenv("BROWSER_RDP_ENABLED", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 
 # VM resource configuration
 VM_RAM_MB = int(os.getenv("VM_RAM_MB", "16384"))
@@ -307,6 +314,46 @@ class GradeCellRequest(BaseModel):
     consumer_key: Optional[str] = None
 
 
+# Reason codes for an unavailable desktop mode. The browser shows the student
+# a message chosen from these; none of them names a host, a port, or an image.
+DESKTOP_DISABLED = "disabled"
+DESKTOP_PENDING = "pending"
+DESKTOP_NOT_PROVISIONED = "not_provisioned"
+
+
+class TerminalAccess(BaseModel):
+    url: Optional[str] = None
+
+
+class DesktopAccess(BaseModel):
+    """Availability only. This structure is relayed to the browser by an
+    unauthenticated proxy, so it carries no token and no target detail."""
+
+    available: bool = False
+    reason: Optional[str] = None
+
+
+class SessionAccess(BaseModel):
+    terminal: TerminalAccess
+    desktop: DesktopAccess
+
+
+def build_access(url: Optional[str], ready: bool) -> SessionAccess:
+    """Derive the access map from the values a response already reports.
+
+    Deriving rather than assigning is what keeps `url` and
+    access.terminal.url from drifting apart as later phases fill in the
+    desktop mode.
+    """
+    if not BROWSER_RDP_ENABLED:
+        desktop = DesktopAccess(reason=DESKTOP_DISABLED)
+    elif not ready:
+        desktop = DesktopAccess(reason=DESKTOP_PENDING)
+    else:
+        desktop = DesktopAccess(reason=DESKTOP_NOT_PROVISIONED)
+    return SessionAccess(terminal=TerminalAccess(url=url), desktop=desktop)
+
+
 class Session(BaseModel):
     session_id: str
     url: str
@@ -317,6 +364,11 @@ class Session(BaseModel):
     assignment_title: Optional[str] = None
     created_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
+
+    @computed_field
+    @property
+    def access(self) -> SessionAccess:
+        return build_access(self.url, self.status == "running")
 
 
 class SessionList(BaseModel):
@@ -361,6 +413,11 @@ class SessionStatus(BaseModel):
     steps: List[ProvisioningStep]
     progress_percent: int
     estimated_seconds_remaining: Optional[int] = None
+
+    @computed_field
+    @property
+    def access(self) -> SessionAccess:
+        return build_access(self.url, self.ready)
 
 
 # ============================================================================
