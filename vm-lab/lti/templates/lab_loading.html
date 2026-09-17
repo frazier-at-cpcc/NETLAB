@@ -271,10 +271,6 @@
                                     Running
                                 </span>
                             </div>
-                            <div id="vm-ip-row" class="flex justify-between items-center" style="display: none;">
-                                <span class="text-sm text-slate-500">VM IP</span>
-                                <span id="vm-ip" class="font-mono text-sm text-slate-700">-</span>
-                            </div>
                         </div>
 
                         <!-- Primary Action -->
@@ -575,10 +571,6 @@
             if (data.ready && data.url) {
                 showState('running');
                 document.getElementById('open-terminal-btn').href = data.url;
-                if (data.vm_ip) {
-                    document.getElementById('vm-ip').textContent = data.vm_ip;
-                    document.getElementById('vm-ip-row').style.display = 'flex';
-                }
                 stopPolling();
                 return;
             }

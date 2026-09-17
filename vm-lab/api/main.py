@@ -357,7 +357,6 @@ class SessionStatus(BaseModel):
     status: str
     ready: bool
     url: Optional[str] = None
-    vm_ip: Optional[str] = None
     error_message: Optional[str] = None
     steps: List[ProvisioningStep]
     progress_percent: int
@@ -1405,7 +1404,6 @@ async def get_session_status(session_id: str):
         status=status,
         ready=ready,
         url=row['url'] if ready else None,
-        vm_ip=vm_ip,
         error_message=status_message if status == 'error' else None,
         steps=steps,
         progress_percent=progress,
