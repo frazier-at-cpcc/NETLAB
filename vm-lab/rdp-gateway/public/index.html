@@ -27,7 +27,12 @@ client.onstatechange = state => {
   status.textContent = state === 3 ? 'Connected — waiting for desktop' : `State ${state}`;
   requestAnimationFrame(fitDisplay);
 };
-client.getDisplay().onresize = (width, height) => { if (width > 0 && height > 0) status.hidden = true; };
+client.getDisplay().onresize = (width, height) => {
+  if (width > 0 && height > 0) {
+    status.hidden = true;
+    requestAnimationFrame(fitDisplay);
+  }
+};
 document.querySelector('#display').appendChild(client.getDisplay().getElement());
 const mouse = new Guacamole.Mouse(client.getDisplay().getElement());
 mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = state => client.sendMouseState(state);
