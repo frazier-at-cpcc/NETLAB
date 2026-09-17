@@ -1,11 +1,11 @@
 'use strict';
 
-const crypto = require('crypto');
 const express = require('express');
 const GuacamoleLite = require('guacamole-lite');
 
 const { ConnectionStore } = require('./connectionStore');
 const { redeemDesktopAccess, RedemptionFailed } = require('./labApi');
+const { encryptHandleToken } = require('./browserToken');
 
 const HTTP_PORT = Number(process.env.HTTP_PORT || 8080);
 const WS_PORT = Number(process.env.WS_PORT || 8081);
@@ -27,19 +27,6 @@ if (!LAB_API_URL || !LAB_API_SERVICE_TOKEN)
 
 const store = new ConnectionStore({ ttlMs: HANDLE_TTL_MS });
 setInterval(() => store.sweep(), HANDLE_TTL_MS).unref();
-
-/**
- * guacamole-lite requires an encrypted token and will not accept a bare
- * value, so the handle travels inside one. The encryption is a framework
- * requirement rather than the security boundary. The boundary is that the
- * plaintext holds a single-use handle and no host, user, or password.
- */
-function encryptToken(payload) {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(TOKEN_KEY), iv);
-  const value = Buffer.concat([cipher.update(JSON.stringify(payload), 'utf8'), cipher.final()]);
-  return Buffer.from(JSON.stringify({ iv: iv.toString('base64'), value: value.toString('base64') })).toString('base64');
-}
 
 new GuacamoleLite({ port: WS_PORT, host: '0.0.0.0' }, { host: GUACD_HOST, port: 4822 }, {
   crypt: { cypher: 'AES-256-CBC', key: TOKEN_KEY },
@@ -76,7 +63,7 @@ app.get('/api/token', async (req, res) => {
       reference: typeof reference === 'string' ? reference : '',
     });
     const handle = store.put(redeemed.parameters);
-    const token = encryptToken({ connection: { type: 'rdp', handle } });
+    const token = encryptHandleToken(TOKEN_KEY, handle);
     const websocket = WS_PUBLIC_URL || `${req.protocol === 'https' ? 'wss' : 'ws'}://${req.hostname}:${WS_PORT}/`;
     console.log(`desktop_handle_issued session=${redeemed.session_id}`);
     return res.json({ token, websocket });

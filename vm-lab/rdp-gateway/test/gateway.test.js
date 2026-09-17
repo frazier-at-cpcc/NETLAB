@@ -171,3 +171,36 @@ test('the image copies every local module server.js requires', () => {
     );
   }
 });
+
+const { encryptHandleToken, decryptHandleToken } = require('../browserToken');
+
+const KEY = '0123456789abcdef0123456789abcdef';
+
+test('the browser token carries a handle and no connection parameters', () => {
+  const token = encryptHandleToken(KEY, 'a-single-use-handle');
+  const plaintext = decryptHandleToken(KEY, token);
+
+  assert.deepEqual(JSON.parse(plaintext), {
+    connection: { type: 'rdp', handle: 'a-single-use-handle' },
+  });
+
+  for (const secret of Object.values(PARAMETERS)) {
+    assert.ok(
+      !plaintext.includes(secret),
+      `the browser token must not carry ${secret}`,
+    );
+  }
+});
+
+test('the token is opaque to a holder without the key', () => {
+  const token = encryptHandleToken(KEY, 'a-single-use-handle');
+
+  assert.ok(!Buffer.from(token, 'base64').toString('utf8').includes('handle'));
+});
+
+test('two tokens for the same handle differ', () => {
+  const first = encryptHandleToken(KEY, 'a-single-use-handle');
+  const second = encryptHandleToken(KEY, 'a-single-use-handle');
+
+  assert.notEqual(first, second, 'a fresh IV per token, so ciphertext never repeats');
+});
