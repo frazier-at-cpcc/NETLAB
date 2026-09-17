@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Netlab RDP prototype</title>
+<style>html,body,#display{margin:0;width:100%;height:100%;background:#111}#status{position:fixed;z-index:1;color:#fff;padding:8px;font:14px sans-serif}</style>
+<div id="status">Connecting…</div><div id="display"></div>
+<script type="module">
+import Guacamole from './guacamole-common.js';
+const status = document.querySelector('#status');
+const access = new URLSearchParams(location.search).get('access');
+if (!access) { status.textContent = 'Missing access token'; throw new Error('missing access token'); }
+const response = await fetch(`/api/token?access=${encodeURIComponent(access)}`);
+if (!response.ok) { status.textContent = 'Unauthorized'; throw new Error('unauthorized'); }
+const { token, websocket } = await response.json();
+const tunnel = new Guacamole.WebSocketTunnel(`${websocket}?token=${encodeURIComponent(token)}`);
+const client = new Guacamole.Client(tunnel);
+client.onerror = error => { status.textContent = `Connection error: ${error.message || error}`; };
+client.onstatechange = state => { status.textContent = state === 3 ? 'Connected' : `State ${state}`; };
+document.querySelector('#display').appendChild(client.getDisplay().getElement());
+window.addEventListener('resize', () => client.sendSize(window.innerWidth, window.innerHeight));
+client.connect(`width=${window.innerWidth}&height=${window.innerHeight}&dpi=96`);
+window.addEventListener('beforeunload', () => client.disconnect());
+</script>

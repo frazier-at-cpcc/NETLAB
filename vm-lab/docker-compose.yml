@@ -141,6 +141,41 @@ services:
       - lab-network
       - vm-network
 
+  # MVP browser RDP gateway. The access token endpoint is temporary; the lab
+  # API will replace it with per-session, one-time tokens before production.
+  rdp-gateway:
+    build:
+      context: ./rdp-gateway
+      dockerfile: Dockerfile
+    container_name: rdp-gateway
+    restart: unless-stopped
+    environment:
+      - HTTP_PORT=8080
+      - WS_PORT=8081
+      - GUACD_HOST=${GUACD_HOST:-guacd}
+      - PROTOTYPE_ACCESS_TOKEN=${PROTOTYPE_ACCESS_TOKEN}
+      - GUACAMOLE_TOKEN_KEY=${GUACAMOLE_TOKEN_KEY}
+      - RDP_HOST=${RDP_HOST}
+      - RDP_PORT=${RDP_PORT:-3389}
+      - RDP_USERNAME=${RDP_USERNAME}
+      - RDP_PASSWORD=${RDP_PASSWORD}
+    depends_on:
+      - guacd
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.rdp.rule=Host(`rdp.${DOMAIN}`)"
+      - "traefik.http.routers.rdp.entrypoints=websecure"
+      - "traefik.http.routers.rdp.tls=true"
+      - "traefik.http.services.rdp.loadbalancer.server.port=8080"
+      - "traefik.http.routers.rdp-ws.rule=Host(`rdp.${DOMAIN}`) && PathPrefix(`/ws`)"
+      - "traefik.http.routers.rdp-ws.entrypoints=websecure"
+      - "traefik.http.routers.rdp-ws.tls=true"
+      - "traefik.http.routers.rdp-ws.service=rdp-ws"
+      - "traefik.http.services.rdp-ws.loadbalancer.server.port=8081"
+    networks:
+      - lab-network
+      - vm-network
+
   # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
