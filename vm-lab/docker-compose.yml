@@ -139,9 +139,20 @@ services:
     image: guacamole/guacd:1.6.0
     container_name: guacd
     restart: unless-stopped
+    # No healthcheck. The image carries no HTTP client and no shell suitable
+    # for a TCP probe, and guacd speaks its own protocol on 4822. The gateway
+    # surfaces a failed guacd as a failed connection, which is where a student
+    # would see it anyway.
     networks:
       - lab-network
       - vm-network
+    mem_limit: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # Browser RDP gateway. It holds no RDP target: a target arrives from lab-api
   # for one connection, against one single-use reference presented by one
@@ -163,6 +174,16 @@ services:
       - HANDLE_TTL_MS=${HANDLE_TTL_MS:-30000}
     depends_on:
       - guacd
+    healthcheck:
+      # node:22-alpine carries no curl. Node 22 has a global fetch.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:8080/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 3
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.rdp.rule=Host(`rdp.${DOMAIN}`)"
@@ -177,6 +198,13 @@ services:
     networks:
       - lab-network
       - vm-network
+    mem_limit: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # PostgreSQL Database
   postgres:

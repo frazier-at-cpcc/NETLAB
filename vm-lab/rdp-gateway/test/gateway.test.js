@@ -154,3 +154,20 @@ test('the client page drops the reference from the address bar', () => {
 
   assert.match(page, /history\.replaceState/);
 });
+
+test('the image copies every local module server.js requires', () => {
+  const fs = require('node:fs');
+  const server = fs.readFileSync(`${__dirname}/../server.js`, 'utf8');
+  const dockerfile = fs.readFileSync(`${__dirname}/../Dockerfile`, 'utf8');
+
+  const required = [...server.matchAll(/require\('\.\/([^']+)'\)/g)].map((m) => m[1]);
+  assert.ok(required.length > 0, 'server.js requires at least one local module');
+
+  for (const name of required) {
+    const file = name.endsWith('.js') ? name : `${name}.js`;
+    assert.ok(
+      dockerfile.includes(file),
+      `Dockerfile must COPY ${file}, or the container fails at startup with MODULE_NOT_FOUND`,
+    );
+  }
+});

@@ -2,7 +2,9 @@ FROM node:22-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
-COPY server.js ./
+# Every module server.js requires at runtime. Copying only server.js
+# leaves the container to fail at startup with MODULE_NOT_FOUND.
+COPY server.js connectionStore.js labApi.js ./
 COPY public ./public
 USER node
 EXPOSE 8080 8081
