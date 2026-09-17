@@ -95,7 +95,21 @@ if command -v dnf >/dev/null 2>&1; then
     dnf install -y gnome-remote-desktop freerdp
     systemctl enable gdm 2>/dev/null || true
     echo "  Installed GNOME Remote Desktop and FreeRDP tooling"
-    echo "  Configure grdctl TLS credentials, headless session, and firewall before templating"
+    if [ -n "${RDP_PASSWORD:-}" ]; then
+        echo "  Configuring the optional headless RDP session for student..."
+        cert_dir=/home/student/.local/share/gnome-remote-desktop/certificates
+        install -d -m 700 -o student -g student "$cert_dir"
+        runuser -u student -- winpr-makecert -silent -rdp -path "$cert_dir" rdp-tls
+        runuser -u student -- grdctl --headless rdp set-tls-key "$cert_dir/rdp-tls.key"
+        runuser -u student -- grdctl --headless rdp set-tls-cert "$cert_dir/rdp-tls.crt"
+        runuser -u student -- grdctl --headless rdp set-credentials student "$RDP_PASSWORD"
+        runuser -u student -- grdctl --headless rdp enable
+        loginctl enable-linger student 2>/dev/null || true
+        systemctl enable "gnome-headless-session@student.service" 2>/dev/null || true
+        echo "  Headless RDP configured (password supplied through RDP_PASSWORD)"
+    else
+        echo "  Set RDP_PASSWORD to configure headless RDP before templating"
+    fi
     echo "  For pre-RHEL 10 images, xrdp/xorgxrdp remains a supported fallback"
 else
     echo "  WARNING: dnf is unavailable; install xrdp and xorgxrdp for browser RDP manually"
