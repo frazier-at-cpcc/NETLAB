@@ -41,11 +41,19 @@ def _load_api_main():
 
 
 class _FakeDb:
+    """Answers the session lookup and nothing else.
+
+    An earlier version returned the same row to every query, which made the
+    desktop-record lookup see a session row and report a desktop that had
+    never been provisioned. A stub that answers questions it was not asked
+    makes a test pass for the wrong reason.
+    """
+
     def __init__(self, row):
-        self._row = row
+        self._rows = [row]
 
     async def fetchrow(self, _query, *_args):
-        return self._row
+        return self._rows.pop(0) if self._rows else None
 
 
 def _row(status):

@@ -28,7 +28,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, Response, JSONResponse
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, Field, computed_field
 import asyncpg
 import docker
 from proxmoxer import ProxmoxAPI
@@ -118,6 +118,13 @@ PROXMOX_MTU = os.getenv("PROXMOX_MTU", "")  # Optional MTU for net0; empty = Pro
 BROWSER_RDP_ENABLED = os.getenv("BROWSER_RDP_ENABLED", "").strip().lower() in {
     "1", "true", "yes", "on",
 }
+RDP_PORT = int(os.getenv("RDP_PORT", "3389"))
+RDP_USERNAME = os.getenv("RDP_USERNAME", "student")
+# RHEL GNOME Remote Desktop negotiates TLS. Windows images will want "nla".
+RDP_SECURITY = os.getenv("RDP_SECURITY", "any")
+# The password is never stored on the access record. The record carries this
+# reference, and only lab-api resolves it.
+LAB_RDP_CREDENTIAL_REF = "env:LAB_RDP_PASSWORD"
 
 # VM resource configuration
 VM_RAM_MB = int(os.getenv("VM_RAM_MB", "16384"))
@@ -344,7 +351,9 @@ class SessionAccess(BaseModel):
     desktop: DesktopAccess
 
 
-def build_access(url: Optional[str], ready: bool) -> SessionAccess:
+def build_access(
+    url: Optional[str], ready: bool, desktop_record: bool = False
+) -> SessionAccess:
     """Derive the access map from the values a response already reports.
 
     Deriving rather than assigning is what keeps `url` and
@@ -355,6 +364,8 @@ def build_access(url: Optional[str], ready: bool) -> SessionAccess:
         desktop = DesktopAccess(reason=DESKTOP_DISABLED)
     elif not ready:
         desktop = DesktopAccess(reason=DESKTOP_PENDING)
+    elif desktop_record:
+        desktop = DesktopAccess(available=True)
     else:
         desktop = DesktopAccess(reason=DESKTOP_NOT_PROVISIONED)
     return SessionAccess(terminal=TerminalAccess(url=url), desktop=desktop)
@@ -419,11 +430,14 @@ class SessionStatus(BaseModel):
     steps: List[ProvisioningStep]
     progress_percent: int
     estimated_seconds_remaining: Optional[int] = None
+    # Input to the access map, never part of the payload. The browser learns
+    # that a desktop exists, not what the record holds.
+    desktop_record: bool = Field(default=False, exclude=True)
 
     @computed_field
     @property
     def access(self) -> SessionAccess:
-        return build_access(self.url, self.ready)
+        return build_access(self.url, self.ready, self.desktop_record)
 
 
 # ============================================================================
@@ -1088,8 +1102,76 @@ async def cleanup_expired_sessions(db: asyncpg.Pool):
         await destroy_session_internal(db, row['session_id'], row['vm_id'])
 
 
+async def register_desktop_access(db, session_id: str, vm_ip: str) -> bool:
+    """Record desktop access for a session. Never raises.
+
+    This runs after the VM is healthy and the terminal already works, so a
+    refusal returns False and leaves the student with ttyd. Raising here
+    would fail a working lab over a missing desktop.
+    """
+    if not BROWSER_RDP_ENABLED:
+        return False
+
+    try:
+        target = access.validated_target(
+            host=vm_ip,
+            username=RDP_USERNAME,
+            credential_ref=LAB_RDP_CREDENTIAL_REF,
+            port=RDP_PORT,
+            security=RDP_SECURITY,
+        )
+    except (access.InvalidRdpTarget, access.CredentialUnavailable) as exc:
+        logger.error(
+            "Desktop access not registered for session %s: %s",
+            session_id,
+            type(exc).__name__,
+        )
+        return False
+
+    try:
+        await db.execute(
+            access.UPSERT_DESKTOP_ACCESS_SQL,
+            session_id,
+            target.host,
+            target.port,
+            target.username,
+            target.security,
+            LAB_RDP_CREDENTIAL_REF,
+        )
+    except Exception as exc:
+        logger.error(
+            "Desktop access record failed for session %s: %s",
+            session_id,
+            type(exc).__name__,
+        )
+        return False
+
+    logger.info("Registered desktop access for session %s", session_id)
+    return True
+
+
+async def revoke_session_access(db, session_id: str) -> None:
+    """Revoke every access record for a session. Never raises.
+
+    Called before the container and the VM go away. A reference that outlives
+    the address it names could be redeemed against whatever occupies that
+    address next.
+    """
+    try:
+        await db.execute(access.REVOKE_SESSION_ACCESS_SQL, session_id)
+    except Exception as exc:
+        logger.error(
+            "Failed to revoke access for session %s: %s",
+            session_id,
+            type(exc).__name__,
+        )
+
+
 async def destroy_session_internal(db: asyncpg.Pool, session_id: str, vm_id: int):
     """Internal function to destroy a session."""
+    # Revoke access before anything it names disappears.
+    await revoke_session_access(db, session_id)
+
     # Finalize recording before destroying container
     await finalize_recording(db, session_id)
 
@@ -1530,10 +1612,19 @@ async def get_session_status(session_id: str):
         ready = False
         estimated_remaining = None
 
+    # Only asked once the session is ready and the mode could be offered, so
+    # a provisioning poll does not pay for a query whose answer is fixed.
+    desktop_record = False
+    if ready and BROWSER_RDP_ENABLED:
+        desktop_record = bool(
+            await db.fetchrow(access.DESKTOP_ACCESS_EXISTS_SQL, session_id)
+        )
+
     return SessionStatus(
         session_id=session_id,
         status=status,
         ready=ready,
+        desktop_record=desktop_record,
         url=row['url'] if ready else None,
         error_message=status_message if status == 'error' else None,
         steps=steps,
@@ -1789,6 +1880,13 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
             )
 
             if container_id:
+                # Registered before the session is marked running, so the
+                # first poll that reports ready reports the desktop with it.
+                # A refusal returns False and leaves the terminal alone.
+                desktop_registered = await register_desktop_access(
+                    db, session_id, vm_ip
+                )
+
                 await db.execute(
                     """
                     UPDATE vm_sessions
@@ -1797,6 +1895,12 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                     WHERE session_id = $1
                     """,
                     session_id, container_id, f"ttyd-{session_id}"
+                )
+                await log_event(
+                    db,
+                    session_id,
+                    'desktop_access',
+                    {'registered': desktop_registered},
                 )
                 await log_event(db, session_id, 'running', {'recording_path': recording_path})
                 logger.info(f"Session {session_id} is now running")

@@ -76,6 +76,33 @@ WHERE session_id = $1
 RETURNING session_id
 """
 
+UPSERT_DESKTOP_ACCESS_SQL = """
+INSERT INTO vm_session_access
+    (session_id, mode, rdp_host, rdp_port, rdp_username, rdp_security,
+     credential_ref)
+VALUES ($1, 'desktop', $2, $3, $4, $5, $6)
+ON CONFLICT (session_id, mode) DO UPDATE
+SET rdp_host = EXCLUDED.rdp_host,
+    rdp_port = EXCLUDED.rdp_port,
+    rdp_username = EXCLUDED.rdp_username,
+    rdp_security = EXCLUDED.rdp_security,
+    credential_ref = EXCLUDED.credential_ref,
+    revoked_at = NULL,
+    token_hash = NULL
+"""
+
+# A re-provisioned session reuses its row, and the clause above clears
+# token_hash when it does. A reference minted against the previous VM must
+# not survive into the new one, whose address the row now names.
+
+DESKTOP_ACCESS_EXISTS_SQL = """
+SELECT TRUE AS exists
+FROM vm_session_access
+WHERE session_id = $1
+  AND mode = 'desktop'
+  AND revoked_at IS NULL
+"""
+
 REVOKE_SESSION_ACCESS_SQL = """
 UPDATE vm_session_access
 SET revoked_at = CURRENT_TIMESTAMP,
@@ -102,6 +129,24 @@ def resolve_credential(reference: str) -> str:
     return value
 
 
+def validated_target(
+    *, host: str, username: str, credential_ref: str, port: int, security: str
+) -> RdpTarget:
+    """Validate a prospective target before a record promises a desktop.
+
+    Resolving the credential here is deliberate. A record written without
+    checking it would advertise a desktop that fails at the handshake, long
+    after the student was told it was ready.
+    """
+    return RdpTarget(
+        host=host,
+        username=username,
+        password=resolve_credential(credential_ref),
+        port=port,
+        security=security,
+    )
+
+
 def connection_parameters(row) -> dict[str, str]:
     """Build the private guacd parameters for a redeemed access record.
 
@@ -121,15 +166,18 @@ def connection_parameters(row) -> dict[str, str]:
 
 __all__ = [
     "ASSIGN_DESKTOP_TOKEN_SQL",
+    "DESKTOP_ACCESS_EXISTS_SQL",
     "AccessNotRedeemable",
     "CredentialUnavailable",
     "DESKTOP_MODE",
     "InvalidRdpTarget",
     "REDEEM_DESKTOP_TOKEN_SQL",
     "REVOKE_SESSION_ACCESS_SQL",
+    "UPSERT_DESKTOP_ACCESS_SQL",
     "TERMINAL_MODE",
     "connection_parameters",
     "hash_token",
     "mint_desktop_token",
     "resolve_credential",
+    "validated_target",
 ]
