@@ -1,7 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>Netlab RDP prototype</title>
-<style>html,body,#display{margin:0;width:100%;height:100%;background:#111}#status{position:fixed;z-index:1;color:#fff;padding:8px;font:14px sans-serif}</style>
+<style>html,body,#display{margin:0;width:100%;height:100%;background:#111}#display{position:relative;isolation:isolate}#status{position:fixed;z-index:10;left:0;top:0;right:0;color:#fff;background:#252525;padding:12px;font:16px sans-serif}</style>
 <div id="status">Connecting…</div><div id="display"></div>
 <script type="module">
 import Guacamole from './guacamole-common.js';
@@ -11,12 +11,52 @@ if (!access) { status.textContent = 'Missing access token'; throw new Error('mis
 const response = await fetch(`/api/token?access=${encodeURIComponent(access)}`);
 if (!response.ok) { status.textContent = 'Unauthorized'; throw new Error('unauthorized'); }
 const { token, websocket } = await response.json();
-const tunnel = new Guacamole.WebSocketTunnel(`${websocket}?token=${encodeURIComponent(token)}`);
+const tunnel = new Guacamole.WebSocketTunnel(websocket);
 const client = new Guacamole.Client(tunnel);
-client.onerror = error => { status.textContent = `Connection error: ${error.message || error}`; };
-client.onstatechange = state => { status.textContent = state === 3 ? 'Connected' : `State ${state}`; };
+// Use Guacamole's Image/data-URI decoder rather than createImageBitmap().
+// The bitmap path has no rejection handler and can leave the entire display
+// queue blocked when a browser rejects an incoming PNG/JPEG bitmap.
+const display = client.getDisplay();
+display.drawStream = (layer, x, y, stream, mimetype) => {
+  const reader = new Guacamole.DataURIReader(stream, mimetype);
+  reader.onend = () => display.draw(layer, x, y, reader.getURI());
+};
+client.onerror = error => { status.hidden = false; status.textContent = `Connection error: ${error.message || error}`; };
+client.onstatechange = state => {
+  status.hidden = false;
+  status.textContent = state === 3 ? 'Connected — waiting for desktop' : `State ${state}`;
+  requestAnimationFrame(fitDisplay);
+};
+client.getDisplay().onresize = (width, height) => { if (width > 0 && height > 0) status.hidden = true; };
 document.querySelector('#display').appendChild(client.getDisplay().getElement());
+const mouse = new Guacamole.Mouse(client.getDisplay().getElement());
+mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = state => client.sendMouseState(state);
+const keyboard = new Guacamole.Keyboard(document);
+keyboard.onkeydown = keysym => client.sendKeyEvent(1, keysym);
+keyboard.onkeyup = keysym => client.sendKeyEvent(0, keysym);
 window.addEventListener('resize', () => client.sendSize(window.innerWidth, window.innerHeight));
-client.connect(`width=${window.innerWidth}&height=${window.innerHeight}&dpi=96`);
+function fitDisplay() {
+  // Scale against the browser viewport, never the display element itself.
+  // display.scale() changes that element's layout size, so observing it and
+  // feeding its dimensions back into this calculation creates runaway scale.
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  const desktopWidth = display.getWidth();
+  const desktopHeight = display.getHeight();
+  if (width > 0 && height > 0 && desktopWidth > 0 && desktopHeight > 0) {
+    const scale = Math.min(width / desktopWidth, height / desktopHeight);
+    display.scale(Math.max(scale, 0.1));
+    status.hidden = true;
+  }
+}
+window.addEventListener('resize', fitDisplay);
+client.connect(`token=${encodeURIComponent(token)}&width=${window.innerWidth}&height=${window.innerHeight}&dpi=96`);
+// The display dimensions arrive asynchronously in Guacamole instructions.
+// A short bounded retry handles both fast and slow RDP handshakes.
+let fitAttempts = 0;
+const fitTimer = setInterval(() => {
+  fitDisplay();
+  if (++fitAttempts >= 40 || (display.getWidth() > 0 && display.getHeight() > 0)) clearInterval(fitTimer);
+}, 100);
 window.addEventListener('beforeunload', () => client.disconnect());
 </script>

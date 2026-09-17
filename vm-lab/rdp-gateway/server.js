@@ -25,9 +25,9 @@ function encryptToken(payload) {
 
 new GuacamoleLite({ port: WS_PORT, host: '0.0.0.0' }, { host: GUACD_HOST, port: 4822 }, {
   crypt: { cypher: 'AES-256-CBC', key: TOKEN_KEY },
-  // GNOME Remote Desktop on RHEL 10 exposes TLS RDP. NLA is appropriate for
-  // Windows targets, but causes the GNOME listener to reset the connection.
-  connectionDefaultSettings: { rdp: { security: 'tls', 'ignore-cert': true, 'enable-drive': false, 'enable-printing': false, 'enable-audio': false } },
+  // GNOME Remote Desktop on RHEL 10 negotiates TLS. "any" lets FreeRDP
+  // complete the server's TLS negotiation while retaining Windows support.
+  connectionDefaultSettings: { rdp: { security: 'any', 'ignore-cert': true, 'enable-drive': false, 'enable-printing': false, 'enable-audio': false } },
 });
 
 const app = express();
