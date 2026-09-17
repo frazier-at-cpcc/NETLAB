@@ -104,6 +104,10 @@ services:
       - LRS_READ_AUTH=${LRS_READ_AUTH:-}
       - LRS_BACKFILL_CUTOFF=${LRS_BACKFILL_CUTOFF:-}
       - LRS_BACKFILL_DOMAINS=${LRS_BACKFILL_DOMAINS:-email.cpcc.edu,lab.cpcc.edu,email.edu.cpcc,cpcc.email.edu,cpcc.edu}
+      # Browser RDP gateway; credentials remain in lab-api/Guacamole's
+      # server-side connection store and are never sent to the browser.
+      - GUACAMOLE_URL=${GUACAMOLE_URL:-http://guacamole/guacamole}
+      - GUACD_HOST=${GUACD_HOST:-guacd}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./lti/keys:/app/keys:ro
@@ -126,6 +130,16 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # Guacamole protocol daemon. It has no public port; only the future
+  # Guacamole web tier and lab-api may reach it on the private lab network.
+  guacd:
+    image: guacamole/guacd:1.6.0
+    container_name: guacd
+    restart: unless-stopped
+    networks:
+      - lab-network
+      - vm-network
 
   # PostgreSQL Database
   postgres:
