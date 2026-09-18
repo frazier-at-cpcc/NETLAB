@@ -91,28 +91,60 @@ echo "  SSH configured and enabled"
 echo ""
 echo "Step 5: Installing browser RDP support..."
 
-if command -v dnf >/dev/null 2>&1; then
+# System mode, not the per-user headless session.
+#
+# The headless path configures cleanly and never opens the port. It needs
+# gnome-headless-session@<user>.service, a static system unit that runs
+# /usr/libexec/gdm-headless-login-session, which forks and exits; systemd reads
+# that exit as a failure and gives up after five restarts. Verified on RHEL 10.0
+# on 2026-09-18. System mode serves the login screen and needs no pre-existing
+# user session.
+#
+# RDP_USER is the GNOME Remote Desktop credential name, not a system account.
+# Do not set it to an account whose password another part of the stack depends
+# on: SSH_USER and SSH_PASSWORD authenticate the ttyd terminal path, and
+# changing that account's password to serve the desktop breaks the terminal.
+
+RDP_USER="${RDP_USER:-student}"
+GRD_CERT_DIR=/var/lib/gnome-remote-desktop
+
+if ! command -v dnf >/dev/null 2>&1; then
+    echo "  WARNING: dnf is unavailable; install gnome-remote-desktop manually"
+elif [ -z "${RDP_PASSWORD:-}" ]; then
+    echo "  Set RDP_PASSWORD to configure browser RDP before templating"
+else
     dnf install -y gnome-remote-desktop freerdp
     systemctl enable gdm 2>/dev/null || true
     echo "  Installed GNOME Remote Desktop and FreeRDP tooling"
-    if [ -n "${RDP_PASSWORD:-}" ]; then
-        echo "  Configuring the optional headless RDP session for student..."
-        cert_dir=/home/student/.local/share/gnome-remote-desktop/certificates
-        install -d -m 700 -o student -g student "$cert_dir"
-        runuser -u student -- winpr-makecert -silent -rdp -path "$cert_dir" rdp-tls
-        runuser -u student -- grdctl --headless rdp set-tls-key "$cert_dir/rdp-tls.key"
-        runuser -u student -- grdctl --headless rdp set-tls-cert "$cert_dir/rdp-tls.crt"
-        runuser -u student -- grdctl --headless rdp set-credentials student "$RDP_PASSWORD"
-        runuser -u student -- grdctl --headless rdp enable
-        loginctl enable-linger student 2>/dev/null || true
-        systemctl enable "gnome-headless-session@student.service" 2>/dev/null || true
-        echo "  Headless RDP configured (password supplied through RDP_PASSWORD)"
-    else
-        echo "  Set RDP_PASSWORD to configure headless RDP before templating"
+
+    install -d -m 700 -o gnome-remote-desktop -g gnome-remote-desktop "$GRD_CERT_DIR"
+    if [ ! -s "$GRD_CERT_DIR/rdp-tls.crt" ]; then
+        runuser -u gnome-remote-desktop -- \
+            winpr-makecert -silent -rdp -path "$GRD_CERT_DIR" rdp-tls
     fi
+
+    grdctl --system rdp set-tls-key  "$GRD_CERT_DIR/rdp-tls.key"
+    grdctl --system rdp set-tls-cert "$GRD_CERT_DIR/rdp-tls.crt"
+    # Without this the server accepts the connection and then logs
+    # "Credentials are not set, denying client", which reads as a network
+    # fault from the client side.
+    grdctl --system rdp set-credentials "$RDP_USER" "$RDP_PASSWORD"
+    grdctl --system rdp enable
+    systemctl enable --now gnome-remote-desktop.service
+
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+        firewall-cmd --permanent --add-port=3389/tcp >/dev/null
+        firewall-cmd --reload >/dev/null
+    fi
+
+    if ss -lnt 2>/dev/null | grep -q ':3389'; then
+        echo "  Browser RDP listening on 3389 as credential '$RDP_USER'"
+    else
+        echo "  WARNING: RDP configured but nothing is listening on 3389"
+        systemctl is-active gnome-remote-desktop.service || true
+    fi
+
     echo "  For pre-RHEL 10 images, xrdp/xorgxrdp remains a supported fallback"
-else
-    echo "  WARNING: dnf is unavailable; install xrdp and xorgxrdp for browser RDP manually"
 fi
 
 # ------------------------------------------------------------------------------
