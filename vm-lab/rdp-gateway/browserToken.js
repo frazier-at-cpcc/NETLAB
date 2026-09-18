@@ -18,7 +18,13 @@ const crypto = require('crypto');
 function encryptHandleToken(key, handle) {
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(key), iv);
-  const payload = JSON.stringify({ connection: { type: 'rdp', handle } });
+  // The handle must sit under connection.settings. ClientConnection's
+  // mergeConnectionOptions rebuilds connection from
+  // connectionDefaultSettings[type] merged with connection.settings, so any
+  // key placed directly on connection is discarded before the callback runs.
+  const payload = JSON.stringify({
+    connection: { type: 'rdp', settings: { handle } },
+  });
   const value = Buffer.concat([cipher.update(payload, 'utf8'), cipher.final()]);
   return Buffer.from(
     JSON.stringify({ iv: iv.toString('base64'), value: value.toString('base64') }),

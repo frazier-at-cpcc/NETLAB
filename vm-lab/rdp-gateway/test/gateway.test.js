@@ -181,7 +181,7 @@ test('the browser token carries a handle and no connection parameters', () => {
   const plaintext = decryptHandleToken(KEY, token);
 
   assert.deepEqual(JSON.parse(plaintext), {
-    connection: { type: 'rdp', handle: 'a-single-use-handle' },
+    connection: { type: 'rdp', settings: { handle: 'a-single-use-handle' } },
   });
 
   for (const secret of Object.values(PARAMETERS)) {
@@ -251,4 +251,17 @@ test('the callbacks are passed as guacamole-lite\'s fourth argument', () => {
     !clientOptions.includes('processConnectionSettings'),
     'callbacks must not be nested inside clientOptions',
   );
+});
+
+test('the handle survives the library\'s option merge', () => {
+  /* mergeConnectionOptions rebuilds connection from
+     connectionDefaultSettings[type] merged with connection.settings. A handle
+     placed directly on connection never reaches processConnectionSettings,
+     and the callback then refuses every connection with CONFIG_ERROR. */
+  const plaintext = JSON.parse(
+    decryptHandleToken(KEY, encryptHandleToken(KEY, 'a-single-use-handle')),
+  );
+
+  assert.equal(plaintext.connection.settings.handle, 'a-single-use-handle');
+  assert.ok(!('handle' in plaintext.connection), 'must not sit directly on connection');
 });
