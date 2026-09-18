@@ -204,3 +204,51 @@ test('two tokens for the same handle differ', () => {
 
   assert.notEqual(first, second, 'a fresh IV per token, so ciphertext never repeats');
 });
+
+const { buildCallbacks } = require('../callbacks');
+
+test('the callback resolves a handle into real connection settings', () => {
+  const store = new ConnectionStore();
+  const handle = store.put(PARAMETERS);
+  const callbacks = buildCallbacks(store);
+  let result;
+
+  callbacks.processConnectionSettings(
+    { connection: { type: 'rdp', handle } },
+    (err, settings) => { result = { err, settings }; },
+  );
+
+  assert.equal(result.err, undefined);
+  assert.equal(result.settings.connection.hostname, PARAMETERS.hostname);
+  assert.equal(result.settings.connection.type, 'rdp');
+  assert.ok(!('handle' in result.settings.connection), 'the handle is consumed, not forwarded');
+});
+
+test('the callback refuses a handle that is not live', () => {
+  const callbacks = buildCallbacks(new ConnectionStore());
+  let err;
+
+  callbacks.processConnectionSettings(
+    { connection: { type: 'rdp', handle: 'never-issued' } },
+    (e) => { err = e; },
+  );
+
+  assert.ok(err instanceof Error);
+});
+
+test('the callbacks are passed as guacamole-lite\'s fourth argument', () => {
+  /* Server.js does Object.assign({processConnectionSettings: passthrough},
+     callbacks) on its FOURTH parameter. A callbacks object placed inside
+     clientOptions is silently ignored, guacd receives no hostname, and the
+     failure reads as "DNS lookup failed" against a reachable target. */
+  const fs = require('node:fs');
+  const server = fs.readFileSync(`${__dirname}/../server.js`, 'utf8');
+  const call = server.slice(server.indexOf('new GuacamoleLite('));
+
+  assert.match(call, /buildCallbacks\(store\),\s*\)/);
+  const clientOptions = call.slice(0, call.indexOf('buildCallbacks'));
+  assert.ok(
+    !clientOptions.includes('processConnectionSettings'),
+    'callbacks must not be nested inside clientOptions',
+  );
+});

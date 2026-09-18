@@ -5,6 +5,7 @@ const GuacamoleLite = require('guacamole-lite');
 
 const { ConnectionStore } = require('./connectionStore');
 const { redeemDesktopAccess, RedemptionFailed } = require('./labApi');
+const { buildCallbacks } = require('./callbacks');
 const { encryptHandleToken } = require('./browserToken');
 
 const HTTP_PORT = Number(process.env.HTTP_PORT || 8080);
@@ -28,27 +29,18 @@ if (!LAB_API_URL || !LAB_API_SERVICE_TOKEN)
 const store = new ConnectionStore({ ttlMs: HANDLE_TTL_MS });
 setInterval(() => store.sweep(), HANDLE_TTL_MS).unref();
 
-new GuacamoleLite({ port: WS_PORT, host: '0.0.0.0' }, { host: GUACD_HOST, port: 4822 }, {
-  crypt: { cypher: 'AES-256-CBC', key: TOKEN_KEY },
-  connectionDefaultSettings: {
-    rdp: { 'ignore-cert': true, 'enable-drive': false, 'enable-printing': false, 'enable-audio': false },
-  },
-  callbacks: {
-    // Synchronous by necessity. See connectionStore.js for why an async
-    // callback here is silently ignored by guacamole-lite 1.2.0.
-    processConnectionSettings: (settings, callback) => {
-      const handle = settings && settings.connection && settings.connection.handle;
-      const resolved = store.take(handle);
-      if (!resolved) {
-        return callback(new Error('no live connection for this handle'));
-      }
-      return callback(undefined, {
-        ...settings,
-        connection: { ...settings.connection, ...resolved, handle: undefined },
-      });
+new GuacamoleLite(
+  { port: WS_PORT, host: '0.0.0.0' },
+  { host: GUACD_HOST, port: 4822 },
+  {
+    crypt: { cypher: 'AES-256-CBC', key: TOKEN_KEY },
+    connectionDefaultSettings: {
+      rdp: { 'ignore-cert': true, 'enable-drive': false, 'enable-printing': false, 'enable-audio': false },
     },
   },
-});
+  // Fourth argument. Inside clientOptions it is silently ignored.
+  buildCallbacks(store),
+);
 
 const app = express();
 app.use(express.static('public'));
