@@ -18,6 +18,7 @@ import base64
 import json
 import re
 import ipaddress
+from dataclasses import dataclass
 from typing import Optional, List
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -108,6 +109,9 @@ PROXMOX_VERIFY_SSL = os.getenv("PROXMOX_VERIFY_SSL", "false").lower() == "true"
 PROXMOX_NODE = os.getenv("PROXMOX_NODE", "host1")  # Proxmox node name
 PROXMOX_STORAGE = os.getenv("PROXMOX_STORAGE", "not-vsan")
 PROXMOX_TEMPLATE_ID = int(os.getenv("PROXMOX_TEMPLATE_ID", "500"))
+PROXMOX_TEMPLATE_SNAPSHOT = os.getenv(
+    "PROXMOX_TEMPLATE_SNAPSHOT", "base-with-reporting"
+)
 PROXMOX_BRIDGE = os.getenv("PROXMOX_BRIDGE", "vmbr0")
 PROXMOX_VLAN_TAG = os.getenv("PROXMOX_VLAN_TAG", "")  # Optional VLAN tag for net0; empty = use bridge native/untagged
 PROXMOX_MTU = os.getenv("PROXMOX_MTU", "")  # Optional MTU for net0; empty = Proxmox default (1500)
@@ -707,26 +711,86 @@ def wait_for_task(proxmox: ProxmoxAPI, node: str, upid: str, timeout: int = 300)
     raise Exception("Task timeout")
 
 
-def clone_vm(proxmox: ProxmoxAPI, session_id: str, vm_name: str) -> int:
-    """Clone a VM from the template."""
+@dataclass(frozen=True)
+class TemplateChoice:
+    """What a launch clones. Resolved once, then carried, so the decision is
+    made in one place and logged with the session."""
+
+    template_id: int
+    snapshot_name: str
+
+
+COURSE_TEMPLATE_SQL = """
+SELECT template_id, snapshot_name
+FROM course_templates
+WHERE course_id = $1
+"""
+
+
+async def resolve_course_template(db, course_id: Optional[str]) -> TemplateChoice:
+    """Return the template a course clones from.
+
+    Additive by construction. A course with no mapping, a launch carrying no
+    course, and a deployment where the table does not yet exist all resolve to
+    the deployment default, which is what every course clones today.
+    """
+    default = TemplateChoice(PROXMOX_TEMPLATE_ID, PROXMOX_TEMPLATE_SNAPSHOT)
+    if not course_id:
+        return default
+
+    try:
+        row = await db.fetchrow(COURSE_TEMPLATE_SQL, course_id)
+    except Exception as exc:
+        logger.warning(
+            "Course template lookup failed for %s, using the deployment "
+            "default: %s",
+            course_id,
+            type(exc).__name__,
+        )
+        return default
+
+    if not row:
+        return default
+
+    return TemplateChoice(
+        template_id=row["template_id"],
+        snapshot_name=row["snapshot_name"] or PROXMOX_TEMPLATE_SNAPSHOT,
+    )
+
+
+def clone_vm(
+    proxmox: ProxmoxAPI,
+    session_id: str,
+    vm_name: str,
+    choice: "TemplateChoice" = None,
+    wait=None,
+) -> int:
+    """Clone a VM from the template the course resolved to."""
+    if choice is None:
+        choice = TemplateChoice(PROXMOX_TEMPLATE_ID, PROXMOX_TEMPLATE_SNAPSHOT)
+    if wait is None:
+        wait = wait_for_task
     vmid = allocate_vm_id(proxmox)
 
-    logger.info(f"Cloning template {PROXMOX_TEMPLATE_ID} to VM {vmid} ({vm_name})")
+    logger.info(
+        f"Cloning template {choice.template_id} snapshot {choice.snapshot_name} "
+        f"to VM {vmid} ({vm_name})"
+    )
 
     # Clone the template - returns a task ID (UPID)
     # Using linked clone (full=0) from snapshot for faster provisioning
     # Linked clones share the base snapshot's disk as a read-only base
-    upid = proxmox.nodes(PROXMOX_NODE).qemu(PROXMOX_TEMPLATE_ID).clone.post(
+    upid = proxmox.nodes(PROXMOX_NODE).qemu(choice.template_id).clone.post(
         newid=vmid,
         name=vm_name,
         target=PROXMOX_NODE,
-        snapname='base-with-reporting',  # Clone from the base snapshot with reporting enabled
+        snapname=choice.snapshot_name,
         full=0  # Linked clone (faster, uses snapshot as base)
     )
 
     # Wait for clone task to complete
     logger.info(f"Waiting for clone task {upid} to complete...")
-    wait_for_task(proxmox, PROXMOX_NODE, upid, timeout=120)  # Linked clones are fast
+    wait(proxmox, PROXMOX_NODE, upid, timeout=120)  # Linked clones are fast
     logger.info(f"Clone completed for VM {vmid}")
 
     # Configure the cloned VM. Build net0 from optional VLAN tag and MTU so that
@@ -1683,11 +1747,20 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
     # URL for the session
     url = f"https://lab-{session_id}.{DOMAIN}"
 
-    # Clone VM from template
+    # Clone VM from the template this course resolves to. An unmapped course
+    # resolves to the deployment default, which is what it cloned before this
+    # lookup existed.
+    template_choice = await resolve_course_template(db, request.course_id)
+
     try:
-        vmid = clone_vm(proxmox_api, session_id, vm_name)
+        vmid = clone_vm(proxmox_api, session_id, vm_name, template_choice)
     except Exception as e:
-        logger.error(f"Failed to clone VM: {e}")
+        logger.error(
+            "Failed to clone template %s for course %s: %s",
+            template_choice.template_id,
+            request.course_id,
+            e,
+        )
         raise HTTPException(status_code=500, detail=f"Failed to create VM: {e}")
 
     course_session_key = request.course_session_key or request.session_key
