@@ -186,3 +186,70 @@ def test_the_mapping_is_one_row_per_course():
     assert "course_id" in sql
     assert "PRIMARY KEY" in sql
     assert "template_id INTEGER NOT NULL" in sql
+
+
+# --- templates without a snapshot -------------------------------------
+
+
+def _clone_and_capture(api_main, choice):
+    calls = {}
+
+    class _FakeClone:
+        def post(self, **kwargs):
+            calls.update(kwargs)
+            return "UPID:fake"
+
+    class _FakeQemu:
+        def __init__(self, vmid):
+            calls.setdefault("qemu_ids", []).append(vmid)
+            self.clone = _FakeClone()
+            self.config = type("C", (), {"put": lambda *a, **k: None})()
+
+    class _FakeProxmox:
+        def __init__(self):
+            self.cluster = type(
+                "C", (), {"resources": type("R", (), {"get": lambda *a, **k: []})()}
+            )()
+            self.nodes = lambda _name: type("N", (), {"qemu": staticmethod(_FakeQemu)})()
+
+    api_main.clone_vm(
+        _FakeProxmox(), "a1b2c3d4", "vm-a1b2c3d4", choice, wait=lambda *a, **k: True
+    )
+    return calls
+
+
+def test_a_template_without_a_snapshot_is_cloned_without_snapname():
+    """Every RHCSA foundation template on the pve cluster carries no
+    snapshot. Sending snapname regardless asks Proxmox for a snapshot that
+    does not exist, and the clone fails."""
+    api_main = _load_api_main()
+
+    calls = _clone_and_capture(
+        api_main, api_main.TemplateChoice(template_id=9384, snapshot_name="")
+    )
+
+    assert "snapname" not in calls
+    assert calls["qemu_ids"][0] == 9384
+
+
+def test_a_template_with_a_snapshot_still_sends_snapname():
+    api_main = _load_api_main()
+
+    calls = _clone_and_capture(
+        api_main,
+        api_main.TemplateChoice(template_id=501, snapshot_name="base-with-rdp"),
+    )
+
+    assert calls["snapname"] == "base-with-rdp"
+
+
+@pytest.mark.anyio
+async def test_a_mapping_may_clear_the_snapshot_for_one_course():
+    """An empty string in the row is a deliberate choice of no snapshot, and
+    must not fall back to the deployment default the way NULL does."""
+    api_main = _load_api_main()
+    db = _FakeDb({"template_id": 9384, "snapshot_name": ""})
+
+    choice = await api_main.resolve_course_template(db, COURSE_WITH_TEMPLATE)
+
+    assert choice.snapshot_name == ""

@@ -752,9 +752,12 @@ async def resolve_course_template(db, course_id: Optional[str]) -> TemplateChoic
     if not row:
         return default
 
+    stored = row["snapshot_name"]
+    # NULL defers to the deployment default. An empty string is a deliberate
+    # choice of no snapshot, which a template carrying none requires.
     return TemplateChoice(
         template_id=row["template_id"],
-        snapshot_name=row["snapshot_name"] or PROXMOX_TEMPLATE_SNAPSHOT,
+        snapshot_name=PROXMOX_TEMPLATE_SNAPSHOT if stored is None else stored,
     )
 
 
@@ -773,19 +776,27 @@ def clone_vm(
     vmid = allocate_vm_id(proxmox)
 
     logger.info(
-        f"Cloning template {choice.template_id} snapshot {choice.snapshot_name} "
-        f"to VM {vmid} ({vm_name})"
+        f"Cloning template {choice.template_id} "
+        f"snapshot {choice.snapshot_name or 'none'} to VM {vmid} ({vm_name})"
     )
 
     # Clone the template - returns a task ID (UPID)
     # Using linked clone (full=0) from snapshot for faster provisioning
     # Linked clones share the base snapshot's disk as a read-only base
+    clone_args = {
+        "newid": vmid,
+        "name": vm_name,
+        "target": PROXMOX_NODE,
+        "full": 0,  # Linked clone (faster, uses the base disk)
+    }
+    # Every RHCSA foundation template on the pve cluster carries no snapshot.
+    # Sending snapname regardless asks Proxmox for one that does not exist and
+    # the clone fails, so the parameter is omitted when no snapshot is named.
+    if choice.snapshot_name:
+        clone_args["snapname"] = choice.snapshot_name
+
     upid = proxmox.nodes(PROXMOX_NODE).qemu(choice.template_id).clone.post(
-        newid=vmid,
-        name=vm_name,
-        target=PROXMOX_NODE,
-        snapname=choice.snapshot_name,
-        full=0  # Linked clone (faster, uses snapshot as base)
+        **clone_args
     )
 
     # Wait for clone task to complete
