@@ -75,10 +75,15 @@ services:
       - PROXMOX_PORT=${PROXMOX_PORT:-8006}
       - PROXMOX_USER=${PROXMOX_USER:-root@pam}
       - PROXMOX_PASSWORD=${PROXMOX_PASSWORD}
+      # API token authentication. get_proxmox_connection prefers these
+      # over the password, and without them that branch is unreachable.
+      - PROXMOX_TOKEN_NAME=${PROXMOX_TOKEN_NAME:-}
+      - PROXMOX_TOKEN_VALUE=${PROXMOX_TOKEN_VALUE:-}
       - PROXMOX_VERIFY_SSL=${PROXMOX_VERIFY_SSL:-false}
       - PROXMOX_NODE=${PROXMOX_NODE}
       - PROXMOX_STORAGE=${PROXMOX_STORAGE:-local-lvm}
       - PROXMOX_TEMPLATE_ID=${PROXMOX_TEMPLATE_ID:-500}
+      - PROXMOX_TEMPLATE_SNAPSHOT=${PROXMOX_TEMPLATE_SNAPSHOT:-base-with-reporting}
       - PROXMOX_BRIDGE=${PROXMOX_BRIDGE:-vmbr0}
       - PROXMOX_VLAN_TAG=${PROXMOX_VLAN_TAG:-}
       - PROXMOX_MTU=${PROXMOX_MTU:-}
@@ -110,6 +115,13 @@ services:
       # server-side connection store and are never sent to the browser.
       - GUACAMOLE_URL=${GUACAMOLE_URL:-http://guacamole/guacamole}
       - GUACD_HOST=${GUACD_HOST:-guacd}
+      # Browser desktop. Without these the feature reads its defaults
+      # and stays off however the .env is written.
+      - BROWSER_RDP_ENABLED=${BROWSER_RDP_ENABLED:-false}
+      - RDP_USERNAME=${RDP_USERNAME:-student}
+      - RDP_PORT=${RDP_PORT:-3389}
+      - RDP_SECURITY=${RDP_SECURITY:-any}
+      - LAB_RDP_PASSWORD=${LAB_RDP_PASSWORD:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./lti/keys:/app/keys:ro

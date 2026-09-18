@@ -230,3 +230,35 @@ def _sync_noop(journal, label):
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+# --- the container actually receives what the code reads ------------------
+
+
+def test_compose_forwards_every_variable_the_desktop_feature_reads():
+    """Unit tests pass whatever compose does, so nothing else catches this.
+
+    The feature was fully implemented and inert in a real deployment because
+    docker-compose.yml never passed BROWSER_RDP_ENABLED, the credential, the
+    snapshot name, or the API token variables into lab-api. Setting them in
+    .env had no effect at all.
+    """
+    from pathlib import Path
+
+    compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
+    lab_api = compose.split("  lab-api:", 1)[1].split("\n  guacd:", 1)[0]
+
+    for variable in (
+        "BROWSER_RDP_ENABLED",
+        "RDP_USERNAME",
+        "RDP_PORT",
+        "RDP_SECURITY",
+        "LAB_RDP_PASSWORD",
+        "PROXMOX_TEMPLATE_SNAPSHOT",
+        "PROXMOX_TOKEN_NAME",
+        "PROXMOX_TOKEN_VALUE",
+    ):
+        assert f"{variable}=" in lab_api, (
+            f"docker-compose.yml must pass {variable} to lab-api, "
+            "or the code reads its default and the setting is silently ignored"
+        )
