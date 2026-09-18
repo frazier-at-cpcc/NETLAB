@@ -503,6 +503,8 @@ async def lifespan(app: FastAPI):
     os.makedirs(RECORDINGS_DIR, exist_ok=True)
     logger.info(f"Recordings directory: {RECORDINGS_DIR}")
 
+    write_core_traefik_routes(DOMAIN)
+
     # Setup database pool
     app.state.db = await asyncpg.create_pool(
         DATABASE_URL,
@@ -994,6 +996,62 @@ async def check_nested_host_ssh(ip: str, user: str, password: str, nested_host: 
 # ============================================================================
 # Docker/Traefik Management
 # ============================================================================
+
+def write_core_traefik_routes(domain: str) -> None:
+    """Write the routes for the long-lived services.
+
+    Traefik runs with the file provider only. No Docker socket is mounted, so
+    every traefik.* label in docker-compose.yml is inert, including the ones
+    that were supposed to publish the RDP gateway. Generating the routes here
+    keeps the hostnames derived from DOMAIN, which a static file cannot do,
+    and follows the pattern the per-session routes already use.
+    """
+    route_file = os.path.join(TRAEFIK_DYNAMIC_DIR, "core-services.yml")
+    config = f"""# Auto-generated. Hostnames follow DOMAIN, which a static file cannot.
+http:
+  routers:
+    core-lti:
+      rule: "Host(`lti.{domain}`)"
+      entryPoints: [web, websecure]
+      service: core-lti
+    core-api:
+      rule: "Host(`api.{domain}`)"
+      entryPoints: [web, websecure]
+      service: core-api
+    core-rdp:
+      rule: "Host(`rdp.{domain}`)"
+      entryPoints: [web, websecure]
+      service: core-rdp
+    core-rdp-ws:
+      rule: "Host(`rdp.{domain}`) && PathPrefix(`/ws`)"
+      entryPoints: [web, websecure]
+      service: core-rdp-ws
+  services:
+    core-lti:
+      loadBalancer:
+        servers:
+          - url: "http://lti-server:8000"
+    core-api:
+      loadBalancer:
+        servers:
+          - url: "http://lab-api:8000"
+    core-rdp:
+      loadBalancer:
+        servers:
+          - url: "http://rdp-gateway:8080"
+    core-rdp-ws:
+      loadBalancer:
+        servers:
+          - url: "http://rdp-gateway:8081"
+"""
+    try:
+        os.makedirs(TRAEFIK_DYNAMIC_DIR, exist_ok=True)
+        with open(route_file, "w") as handle:
+            handle.write(config)
+        logger.info("Wrote core Traefik routes for domain %s", domain)
+    except Exception as exc:
+        logger.error("Failed to write core Traefik routes: %s", type(exc).__name__)
+
 
 def write_traefik_route(session_id: str, container_name: str, domain: str):
     """Write a Traefik route config file for a ttyd session."""

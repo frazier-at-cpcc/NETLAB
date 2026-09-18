@@ -262,3 +262,18 @@ def test_compose_forwards_every_variable_the_desktop_feature_reads():
             f"docker-compose.yml must pass {variable} to lab-api, "
             "or the code reads its default and the setting is silently ignored"
         )
+
+
+def test_core_routes_are_generated_because_the_labels_are_inert():
+    """Traefik runs with the file provider only and no Docker socket is
+    mounted, so every traefik.* label in docker-compose.yml is dead. The RDP
+    gateway was published solely by those labels, so it was unreachable in
+    every deployment."""
+    api_main = _load_api_main()
+    import inspect
+
+    source = inspect.getsource(api_main.write_core_traefik_routes)
+    for host in ("lti.{domain}", "api.{domain}", "rdp.{domain}"):
+        assert host in source
+    assert "rdp-gateway:8081" in source, "the websocket route must reach port 8081"
+    assert "PathPrefix(`/ws`)" in source
