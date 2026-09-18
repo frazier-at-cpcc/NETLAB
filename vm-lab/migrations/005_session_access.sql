@@ -60,3 +60,10 @@ CREATE INDEX IF NOT EXISTS idx_vm_session_access_session
 CREATE INDEX IF NOT EXISTS idx_vm_session_access_expiry
   ON vm_session_access (expires_at)
   WHERE revoked_at IS NULL;
+
+-- init-db.sql grants on every table that exists when it runs, which is before
+-- this migration. A table created afterwards has no grant, and lab-api, which
+-- connects as the lab role rather than postgres, gets "permission denied for
+-- table" at runtime while every migration reports success.
+GRANT ALL PRIVILEGES ON vm_session_access TO lab;
+GRANT USAGE, SELECT ON SEQUENCE vm_session_access_id_seq TO lab;

@@ -24,3 +24,9 @@ CREATE TABLE IF NOT EXISTS course_templates (
 
     CONSTRAINT valid_course_template_id CHECK (template_id > 0)
 );
+
+-- init-db.sql grants on every table that exists when it runs, which is before
+-- this migration. A table created afterwards has no grant, and lab-api, which
+-- connects as the lab role rather than postgres, gets "permission denied for
+-- table" at runtime while every migration reports success.
+GRANT ALL PRIVILEGES ON course_templates TO lab;
