@@ -112,6 +112,15 @@ PROXMOX_TEMPLATE_ID = int(os.getenv("PROXMOX_TEMPLATE_ID", "500"))
 PROXMOX_TEMPLATE_SNAPSHOT = os.getenv(
     "PROXMOX_TEMPLATE_SNAPSHOT", "base-with-reporting"
 )
+# Linked clones are storage-dependent when the source is not a Proxmox
+# template. On LVM-thin, full=0 against a snapshot silently yields a full
+# clone. On a ZFS pool the same call is refused outright with "Linked clone
+# feature is not supported for a snapshot of ...". Deployments whose image
+# lives on ZFS set this; the default keeps what every existing deployment
+# already sends.
+PROXMOX_FULL_CLONE = os.getenv("PROXMOX_FULL_CLONE", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 PROXMOX_BRIDGE = os.getenv("PROXMOX_BRIDGE", "vmbr0")
 PROXMOX_VLAN_TAG = os.getenv("PROXMOX_VLAN_TAG", "")  # Optional VLAN tag for net0; empty = use bridge native/untagged
 PROXMOX_MTU = os.getenv("PROXMOX_MTU", "")  # Optional MTU for net0; empty = Proxmox default (1500)
@@ -789,7 +798,7 @@ def clone_vm(
         "newid": vmid,
         "name": vm_name,
         "target": PROXMOX_NODE,
-        "full": 0,  # Linked clone (faster, uses the base disk)
+        "full": 1 if PROXMOX_FULL_CLONE else 0,
     }
     # Every RHCSA foundation template on the pve cluster carries no snapshot.
     # Sending snapname regardless asks Proxmox for one that does not exist and

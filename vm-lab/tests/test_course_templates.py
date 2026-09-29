@@ -253,3 +253,33 @@ async def test_a_mapping_may_clear_the_snapshot_for_one_course():
     choice = await api_main.resolve_course_template(db, COURSE_WITH_TEMPLATE)
 
     assert choice.snapshot_name == ""
+
+
+# --- clone mode -------------------------------------------------------
+
+
+def test_the_clone_is_linked_by_default_which_is_what_production_sends():
+    """full=0 is what every existing deployment has always sent. Changing the
+    default would change production's behaviour to fix the pilot's."""
+    api_main = _load_api_main()
+
+    calls = _clone_and_capture(
+        api_main, api_main.TemplateChoice(template_id=501, snapshot_name="snap")
+    )
+
+    assert calls["full"] == 0
+
+
+def test_a_full_clone_is_requested_when_the_deployment_asks_for_one(monkeypatch):
+    """Proxmox refuses full=0 against a snapshot on a ZFS pool with "Linked
+    clone feature is not supported". On LVM-thin the same call silently
+    produces a full clone instead, so the flag is storage-dependent and has to
+    be settable per deployment."""
+    api_main = _load_api_main()
+    monkeypatch.setattr(api_main, "PROXMOX_FULL_CLONE", True)
+
+    calls = _clone_and_capture(
+        api_main, api_main.TemplateChoice(template_id=501, snapshot_name="snap")
+    )
+
+    assert calls["full"] == 1
