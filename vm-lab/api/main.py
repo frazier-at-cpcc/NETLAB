@@ -1849,46 +1849,64 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
     # lookup existed.
     template_choice = await resolve_course_template(db, request.course_id)
 
-    try:
-        vmid = clone_vm(proxmox_api, session_id, vm_name, template_choice)
-    except Exception as e:
-        logger.error(
-            "Failed to clone template %s for course %s: %s",
-            template_choice.template_id,
-            request.course_id,
-            e,
-        )
-        raise HTTPException(status_code=500, detail=f"Failed to create VM: {e}")
-
     course_session_key = request.course_session_key or request.session_key
 
-    # Create initial database record
+    # The row is written before the clone, and the clone happens in the
+    # background task with everything else.
+    #
+    # Cloning inline made this request last as long as the copy. A linked
+    # clone finishes in seconds and hid that. A full clone of a 128 GiB disk
+    # does not, and a request held open that long is terminated by the
+    # Cloudflare tunnel at about 100 seconds, so the student sees a failure
+    # while the clone continues and completes, leaving a virtual machine no
+    # session owns. The launch page already polls the status endpoint, which
+    # is the mechanism this is supposed to use.
     await db.execute(
         """
         INSERT INTO vm_sessions (
             session_id, session_key, course_session_key, user_id, user_email, user_name,
             course_id, course_title, assignment_id, assignment_title,
             vm_ip, vm_name, vm_id, url, status, expires_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11, $12, $13, 'starting', $14)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11, NULL, $12, 'provisioning', $13)
         """,
         session_id, request.session_key, course_session_key, request.user_id, request.user_email,
         request.user_name, request.course_id, request.course_title,
-        request.assignment_id, request.assignment_title, vm_name, vmid, url, expires_at
+        request.assignment_id, request.assignment_title, vm_name, url, expires_at
     )
 
     grade_token = await assign_grade_token(db, session_id)
 
-    logger.info(f"Provisioned VM {vm_name} (ID: {vmid}) on Proxmox")
-
-    await log_event(db, session_id, 'provisioned', {
+    await log_event(db, session_id, 'accepted', {
         'user_id': request.user_id,
         'course_id': request.course_id,
-        'vm_id': vmid
+        'template_id': template_choice.template_id,
     })
 
-    # Start VM and wait for readiness in background
+    # Clone, start, and wait for readiness in background
     async def finalize_provisioning():
         try:
+            try:
+                vmid = clone_vm(proxmox_api, session_id, vm_name, template_choice)
+            except Exception as clone_error:
+                logger.error(
+                    "Failed to clone template %s for course %s: %s",
+                    template_choice.template_id,
+                    request.course_id,
+                    clone_error,
+                )
+                await db.execute(
+                    "UPDATE vm_sessions SET status = 'error', "
+                    "status_message = 'Clone failed' WHERE session_id = $1",
+                    session_id,
+                )
+                return
+
+            await db.execute(
+                "UPDATE vm_sessions SET vm_id = $2, status = 'starting' WHERE session_id = $1",
+                session_id, vmid,
+            )
+            logger.info(f"Cloned VM {vm_name} (ID: {vmid}) on Proxmox")
+
             # Start the VM
             start_vm(proxmox_api, vmid)
 
@@ -2093,7 +2111,10 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
         session_id=session_id,
         url=url,
         vm_ip=None,
-        status="starting",
+        # The row is written as provisioning and the clone has not started.
+        # Reporting "starting" here would tell the launch page the machine
+        # exists before anything has been cloned.
+        status="provisioning",
         user_name=request.user_name,
         course_title=request.course_title,
         assignment_title=request.assignment_title,
