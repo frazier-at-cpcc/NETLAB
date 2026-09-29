@@ -322,3 +322,16 @@ def test_the_wait_is_overridable(monkeypatch):
 
     assert api_main.clone_timeout_seconds(full_clone=False) == 1800
     assert api_main.clone_timeout_seconds(full_clone=True) == 1800
+
+
+def test_an_empty_clone_timeout_is_treated_as_unset(monkeypatch):
+    """docker-compose supplies an empty string, not None, for a variable the
+    operator has not set. int("") raises, and because this runs at import the
+    whole service crash-loops rather than failing one request. The repository
+    already records this in the LTI11_CONSUMERS comment."""
+    api_main = _load_api_main()
+
+    assert api_main._int_setting("", 0) == 0
+    assert api_main._int_setting(None, 0) == 0
+    assert api_main._int_setting("900", 0) == 900
+    assert api_main._int_setting("not-a-number", 0) == 0

@@ -121,8 +121,22 @@ PROXMOX_TEMPLATE_SNAPSHOT = os.getenv(
 PROXMOX_FULL_CLONE = os.getenv("PROXMOX_FULL_CLONE", "").strip().lower() in {
     "1", "true", "yes", "on",
 }
+def _int_setting(raw: str | None, default: int) -> int:
+    """Read an integer setting that docker-compose may supply as empty.
+
+    Compose substitutes an empty string, not None, for a variable the operator
+    has not set, so a bare int(os.getenv(name, "0")) raises ValueError on "".
+    This runs at import, so that failure crash-loops the whole service instead
+    of failing one request. The same trap is recorded against LTI11_CONSUMERS.
+    """
+    try:
+        return int(raw) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
 # Seconds to wait for the clone task. Zero means choose by clone mode.
-PROXMOX_CLONE_TIMEOUT = int(os.getenv("PROXMOX_CLONE_TIMEOUT", "0"))
+PROXMOX_CLONE_TIMEOUT = _int_setting(os.getenv("PROXMOX_CLONE_TIMEOUT"), 0)
 LINKED_CLONE_TIMEOUT = 120
 FULL_CLONE_TIMEOUT = 1800
 
