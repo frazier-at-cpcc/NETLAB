@@ -1315,8 +1315,19 @@ async def mint_my_desktop(request: Request):
             body = await request.json()
         except Exception:
             body = {}
-        course_key = session_key_for_page_token((body or {}).get("page_token", ""))
+        supplied = (body or {}).get("page_token", "")
+        course_key = session_key_for_page_token(supplied)
         if not course_key:
+            # Distinguish the two ways this fails, because they need opposite
+            # remedies: a page rendered before page tokens existed sends an
+            # empty value and the student must reload, while a token that no
+            # longer resolves has expired and the launch must be repeated.
+            logger.warning(
+                "Desktop mint refused: no cookie session and %s",
+                "the page sent no launch token"
+                if not supplied
+                else f"launch token {supplied[:8]}... did not resolve",
+            )
             raise HTTPException(status_code=403, detail="No launch session")
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
