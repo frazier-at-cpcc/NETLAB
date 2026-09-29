@@ -283,3 +283,15 @@ def test_a_full_clone_is_requested_when_the_deployment_asks_for_one(monkeypatch)
     )
 
     assert calls["full"] == 1
+
+
+def test_compose_lets_an_operator_clear_the_snapshot():
+    """${VAR:-default} substitutes the default for an empty value as well as
+    an unset one, so with :- there is no way to say "this source has no
+    snapshot". Storage that refuses to clone from a snapshot needs that."""
+    from pathlib import Path
+
+    compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
+
+    assert "${PROXMOX_TEMPLATE_SNAPSHOT-base-with-reporting}" in compose
+    assert "${PROXMOX_TEMPLATE_SNAPSHOT:-" not in compose

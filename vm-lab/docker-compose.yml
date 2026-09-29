@@ -83,7 +83,11 @@ services:
       - PROXMOX_NODE=${PROXMOX_NODE}
       - PROXMOX_STORAGE=${PROXMOX_STORAGE:-local-lvm}
       - PROXMOX_TEMPLATE_ID=${PROXMOX_TEMPLATE_ID:-500}
-      - PROXMOX_TEMPLATE_SNAPSHOT=${PROXMOX_TEMPLATE_SNAPSHOT:-base-with-reporting}
+      # A single dash, not :-, so that an operator setting this empty gets an
+      # empty value. With :- an empty setting falls back to the default and
+      # there is no way to express a source that has no snapshot, which is
+      # required on storage that refuses to clone from one.
+      - PROXMOX_TEMPLATE_SNAPSHOT=${PROXMOX_TEMPLATE_SNAPSHOT-base-with-reporting}
       - PROXMOX_FULL_CLONE=${PROXMOX_FULL_CLONE:-}
       - PROXMOX_BRIDGE=${PROXMOX_BRIDGE:-vmbr0}
       - PROXMOX_VLAN_TAG=${PROXMOX_VLAN_TAG:-}
