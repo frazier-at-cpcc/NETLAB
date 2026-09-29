@@ -1900,7 +1900,15 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
     async def finalize_provisioning():
         try:
             try:
-                vmid = clone_vm(proxmox_api, session_id, vm_name, template_choice)
+                # In a worker thread. clone_vm is synchronous and the
+                # wait_for_task loop inside it sleeps with time.sleep for as
+                # long as the copy takes, which on a full clone is minutes.
+                # Run on the event loop it stalls every other request in
+                # lab-api, including the health check, and the container is
+                # marked unhealthy while one student's disk copies.
+                vmid = await asyncio.to_thread(
+                    clone_vm, proxmox_api, session_id, vm_name, template_choice
+                )
             except Exception as clone_error:
                 logger.error(
                     "Failed to clone template %s for course %s: %s",

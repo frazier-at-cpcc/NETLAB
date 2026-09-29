@@ -335,3 +335,21 @@ def test_an_empty_clone_timeout_is_treated_as_unset(monkeypatch):
     assert api_main._int_setting(None, 0) == 0
     assert api_main._int_setting("900", 0) == 900
     assert api_main._int_setting("not-a-number", 0) == 0
+
+
+def test_the_clone_is_awaited_off_the_event_loop():
+    """clone_vm and the wait_for_task loop inside it are synchronous, and
+    wait_for_task sleeps with time.sleep for as long as the clone takes.
+
+    Called directly from an async background task that blocks the entire
+    lab-api event loop: health checks time out, the container is marked
+    unhealthy, and every other student's request stalls until the copy
+    finishes. A linked clone takes seconds and hid this. A full clone of a
+    128 GiB disk takes minutes."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "api" / "main.py").read_text()
+
+    assert "asyncio.to_thread(\n                    clone_vm" in source, (
+        "the clone must run in a worker thread, not on the event loop"
+    )
