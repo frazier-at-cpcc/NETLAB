@@ -89,6 +89,7 @@ services:
       # required on storage that refuses to clone from one.
       - PROXMOX_TEMPLATE_SNAPSHOT=${PROXMOX_TEMPLATE_SNAPSHOT-base-with-reporting}
       - PROXMOX_FULL_CLONE=${PROXMOX_FULL_CLONE:-}
+      - PROXMOX_CLONE_TIMEOUT=${PROXMOX_CLONE_TIMEOUT:-}
       - PROXMOX_BRIDGE=${PROXMOX_BRIDGE:-vmbr0}
       - PROXMOX_VLAN_TAG=${PROXMOX_VLAN_TAG:-}
       - PROXMOX_MTU=${PROXMOX_MTU:-}

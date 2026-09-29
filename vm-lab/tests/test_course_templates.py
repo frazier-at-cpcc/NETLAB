@@ -295,3 +295,30 @@ def test_compose_lets_an_operator_clear_the_snapshot():
 
     assert "${PROXMOX_TEMPLATE_SNAPSHOT-base-with-reporting}" in compose
     assert "${PROXMOX_TEMPLATE_SNAPSHOT:-" not in compose
+
+
+# --- clone timeout ----------------------------------------------------
+
+
+def test_a_linked_clone_keeps_the_short_wait():
+    api_main = _load_api_main()
+
+    assert api_main.clone_timeout_seconds(full_clone=False) == 120
+
+
+def test_a_full_clone_waits_far_longer():
+    """A full clone copies the whole disk. 120 seconds was chosen when the
+    only mode was a linked clone, and a 128 GiB copy overruns it, after which
+    lab-api abandons a clone that Proxmox goes on to finish, leaving a virtual
+    machine nothing owns."""
+    api_main = _load_api_main()
+
+    assert api_main.clone_timeout_seconds(full_clone=True) >= 900
+
+
+def test_the_wait_is_overridable(monkeypatch):
+    api_main = _load_api_main()
+    monkeypatch.setattr(api_main, "PROXMOX_CLONE_TIMEOUT", 1800)
+
+    assert api_main.clone_timeout_seconds(full_clone=False) == 1800
+    assert api_main.clone_timeout_seconds(full_clone=True) == 1800

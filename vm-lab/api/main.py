@@ -121,6 +121,24 @@ PROXMOX_TEMPLATE_SNAPSHOT = os.getenv(
 PROXMOX_FULL_CLONE = os.getenv("PROXMOX_FULL_CLONE", "").strip().lower() in {
     "1", "true", "yes", "on",
 }
+# Seconds to wait for the clone task. Zero means choose by clone mode.
+PROXMOX_CLONE_TIMEOUT = int(os.getenv("PROXMOX_CLONE_TIMEOUT", "0"))
+LINKED_CLONE_TIMEOUT = 120
+FULL_CLONE_TIMEOUT = 1800
+
+
+def clone_timeout_seconds(*, full_clone: bool) -> int:
+    """How long to wait for a clone task.
+
+    A linked clone writes almost nothing and finishes in seconds. A full clone
+    copies the entire disk, and 128 GiB takes far longer than the 120 seconds
+    that was chosen when linked was the only mode. Overrunning the wait does
+    not cancel the clone: Proxmox finishes it and lab-api has already raised,
+    so the virtual machine survives with nothing owning it.
+    """
+    if PROXMOX_CLONE_TIMEOUT:
+        return PROXMOX_CLONE_TIMEOUT
+    return FULL_CLONE_TIMEOUT if full_clone else LINKED_CLONE_TIMEOUT
 PROXMOX_BRIDGE = os.getenv("PROXMOX_BRIDGE", "vmbr0")
 PROXMOX_VLAN_TAG = os.getenv("PROXMOX_VLAN_TAG", "")  # Optional VLAN tag for net0; empty = use bridge native/untagged
 PROXMOX_MTU = os.getenv("PROXMOX_MTU", "")  # Optional MTU for net0; empty = Proxmox default (1500)
@@ -812,7 +830,8 @@ def clone_vm(
 
     # Wait for clone task to complete
     logger.info(f"Waiting for clone task {upid} to complete...")
-    wait(proxmox, PROXMOX_NODE, upid, timeout=120)  # Linked clones are fast
+    wait(proxmox, PROXMOX_NODE, upid,
+         timeout=clone_timeout_seconds(full_clone=PROXMOX_FULL_CLONE))
     logger.info(f"Clone completed for VM {vmid}")
 
     # Configure the cloned VM. Build net0 from optional VLAN tag and MTU so that
