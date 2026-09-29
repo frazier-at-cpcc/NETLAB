@@ -428,6 +428,9 @@
         // Configuration from server
         const config = {
             sessionId: "{{ session_id }}",
+            // Presented instead of the session cookie, which the browser
+            // blocks when this page renders inside an LMS iframe.
+            pageToken: "{{ page_token | default('') }}",
             provisionUrl: "/api/provision",
             statusUrl: "/api/session/{{ session_id }}/status",
             stopUrl: "/api/session/{{ session_id }}",
@@ -792,6 +795,8 @@
                 const response = await fetch('/api/my-desktop', {
                     method: 'POST',
                     credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ page_token: config.pageToken }),
                 });
                 if (!response.ok) throw new Error('mint failed');
                 const data = await response.json();

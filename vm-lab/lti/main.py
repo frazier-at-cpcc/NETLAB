@@ -121,6 +121,37 @@ def generate_instructor_token(session_data: dict) -> str:
     return token
 
 
+PAGE_TOKEN_PREFIX = "lab_page:"
+PAGE_TOKEN_EXPIRY_SECONDS = 4 * 3600
+
+
+def issue_page_token(course_session_key: str) -> str:
+    """Mint an unguessable handle the launch page can present instead of a cookie.
+
+    The page renders inside an LMS iframe, where lti_session is a third-party
+    cookie and browsers block it. SameSite=None with Secure is necessary and
+    not sufficient, so a cookie-only route fails in the place the tool is
+    actually used.
+
+    The page cannot present its session key instead, because
+    course_session_key is "{guid}:{user_id}:{course_id}" and a student who
+    knows a classmate's LTI user id can construct it. This token is random and
+    resolves server-side, the same shape as the instructor token above.
+    """
+    token = secrets.token_urlsafe(32)
+    redis_client.setex(
+        f"{PAGE_TOKEN_PREFIX}{token}", PAGE_TOKEN_EXPIRY_SECONDS, course_session_key
+    )
+    return token
+
+
+def session_key_for_page_token(token: str) -> Optional[str]:
+    """Resolve a page token, or None. A value never issued resolves to nothing."""
+    if not token:
+        return None
+    return redis_client.get(f"{PAGE_TOKEN_PREFIX}{token}")
+
+
 def get_instructor_session(token: str) -> Optional[dict]:
     """Get instructor session data from token (from Redis)."""
     if not token:
@@ -919,6 +950,7 @@ async def provision_or_redirect(
                         "lab_loading.html",
                         {
                             "request": request,
+                            "page_token": issue_page_token(ctx.course_session_key),
                             "session_id": session_id,
                             "lab_url": session_data.get('url'),
                             "user_name": user_name,
@@ -934,6 +966,7 @@ async def provision_or_redirect(
                         "lab_loading.html",
                         {
                             "request": request,
+                            "page_token": issue_page_token(ctx.course_session_key),
                             "session_id": session_id,
                             "lab_url": session_data.get('url'),
                             "user_name": user_name,
@@ -956,6 +989,7 @@ async def provision_or_redirect(
             "lab_loading.html",
             {
                 "request": request,
+                            "page_token": issue_page_token(ctx.course_session_key),
                 "session_id": "",  # No session yet
                 "lab_url": "",
                 "user_name": user_name,
@@ -1273,7 +1307,29 @@ async def mint_my_desktop(request: Request):
     """
     session_id = request.session.get('current_session_id')
     if not session_id:
-        raise HTTPException(status_code=403, detail="No launch session")
+        # The cookie is third-party inside an LMS iframe and is routinely
+        # blocked there, so the page presents a token issued at launch. The
+        # token resolves to a session key held server-side; nothing the client
+        # supplies is used as a session key directly.
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        course_key = session_key_for_page_token((body or {}).get("page_token", ""))
+        if not course_key:
+            raise HTTPException(status_code=403, detail="No launch session")
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                found = await client.get(
+                    f"{ORCHESTRATOR_API}/api/session/by-key/"
+                    f"{urllib.parse.quote(course_key, safe='')}"
+                )
+                found.raise_for_status()
+                session_id = found.json().get("session_id")
+        except (httpx.HTTPError, ValueError):
+            session_id = None
+        if not session_id:
+            raise HTTPException(status_code=409, detail="No session for this launch")
 
     if not RDP_GATEWAY_URL:
         logger.error("RDP_GATEWAY_URL is not configured on the LTI server")
