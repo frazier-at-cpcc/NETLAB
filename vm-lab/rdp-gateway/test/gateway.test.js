@@ -148,6 +148,17 @@ test('the client page presents the reference the server expects', () => {
   assert.ok(!page.includes('?access='), 'the prototype access parameter is gone');
 });
 
+test('the client page scales pointer positions to the remote desktop', () => {
+  const fs = require('node:fs');
+  const page = fs.readFileSync(`${__dirname}/../public/index.html`, 'utf8');
+
+  // Guacamole.Mouse reports local browser pixels. The display is scaled to fit
+  // the window, so a position sent without the applyDisplayScale argument
+  // addresses the wrong point on the remote desktop, by a margin that grows
+  // with distance from the top left corner.
+  assert.match(page, /sendMouseState\(state, true\)/);
+});
+
 test('the client page drops the reference from the address bar', () => {
   const fs = require('node:fs');
   const page = fs.readFileSync(`${__dirname}/../public/index.html`, 'utf8');

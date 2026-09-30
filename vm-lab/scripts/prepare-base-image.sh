@@ -140,6 +140,8 @@ echo "Step 5: Installing browser RDP support..."
 
 RDP_USER="${RDP_USER:-student}"
 RDP_DESKTOP_USER="${RDP_DESKTOP_USER:-${SSH_USER:-student}}"
+# 16:9 at a size that fills a maximised browser window without upscaling.
+RDP_RESOLUTION="${RDP_RESOLUTION:-1920x1080}"
 
 if ! command -v dnf >/dev/null 2>&1; then
     echo "  WARNING: dnf is unavailable; install gnome-remote-desktop manually"
@@ -241,6 +243,40 @@ EOF
             grdctl rdp enable
             systemctl --user enable --now gnome-remote-desktop.service
         "
+    fi
+
+    # A blanked session cannot be shared. GNOME blanks after five minutes of
+    # idle, and a lab VM sits idle by definition: nobody touches its console,
+    # because the student is on the other side of a browser. The shared session
+    # therefore goes dark before the first connection and the daemon tears down
+    # every client that arrives afterwards, with ERRINFO_RPC_INITIATED_DISCONNECT
+    # and a deactivate-all immediately after a successful handshake. The symptom
+    # is a client that authenticates, negotiates every channel, and then closes.
+    #
+    # These are system dconf defaults rather than per-user gsettings so that they
+    # hold for whichever account GDM ends up logging in.
+    install -d -m 755 /etc/dconf/db/local.d
+    cat > /etc/dconf/db/local.d/00-lab-desktop <<'EOF'
+[org/gnome/desktop/session]
+idle-delay=uint32 0
+
+[org/gnome/desktop/screensaver]
+idle-activation-enabled=false
+lock-enabled=false
+EOF
+    dconf update 2>/dev/null || true
+    echo "  Idle blanking and screen locking disabled for the shared session"
+
+    # Session sharing mirrors the monitor the guest already has: guacd reports
+    # "Resize method: none" and the client cannot ask for a different size. The
+    # default virtual monitor is 1280x800, which letterboxes in every browser
+    # window. Naming the mode on the kernel command line makes it the connector's
+    # preferred mode, so GNOME selects it at session start with no per-user
+    # configuration to carry or lose.
+    if command -v grubby >/dev/null 2>&1; then
+        grubby --update-kernel=ALL --args="video=Virtual-1:${RDP_RESOLUTION}" >/dev/null 2>&1 \
+            && echo "  Virtual display set to $RDP_RESOLUTION" \
+            || echo "  WARNING: could not set the virtual display mode"
     fi
 
     if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then

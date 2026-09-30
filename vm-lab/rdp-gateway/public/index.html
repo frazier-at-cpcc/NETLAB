@@ -39,11 +39,17 @@ client.getDisplay().onresize = (width, height) => {
 };
 document.querySelector('#display').appendChild(client.getDisplay().getElement());
 const mouse = new Guacamole.Mouse(client.getDisplay().getElement());
-mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = state => client.sendMouseState(state);
+// The second argument is not optional here. Guacamole.Mouse reports positions
+// in local browser pixels, and the display is scaled down to fit the window, so
+// a position sent unscaled addresses a point 1/scale of the way across a
+// desktop that is larger than the element the pointer moved over. The error is
+// zero at the top left and grows with distance, which reads as a pointer that
+// drifts further the closer it gets to an edge. Passing true divides by
+// display.getScale() before the position is sent.
+mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = state => client.sendMouseState(state, true);
 const keyboard = new Guacamole.Keyboard(document);
 keyboard.onkeydown = keysym => client.sendKeyEvent(1, keysym);
 keyboard.onkeyup = keysym => client.sendKeyEvent(0, keysym);
-window.addEventListener('resize', () => client.sendSize(window.innerWidth, window.innerHeight));
 function fitDisplay() {
   // Scale against the browser viewport, never the display element itself.
   // display.scale() changes that element's layout size, so observing it and
