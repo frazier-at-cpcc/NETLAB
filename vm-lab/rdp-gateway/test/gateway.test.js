@@ -159,6 +159,18 @@ test('the client page scales pointer positions to the remote desktop', () => {
   assert.match(page, /sendMouseState\(state, true\)/);
 });
 
+test('the client page shows one cursor, not two', () => {
+  const fs = require('node:fs');
+  const page = fs.readFileSync(`${__dirname}/../public/index.html`, 'utf8');
+
+  // The browser draws its own pointer and Guacamole draws the guest's on a
+  // layer above the desktop. Handing the guest's image to the browser as a CSS
+  // cursor is what collapses them, and it only works if the software cursor is
+  // then turned off.
+  assert.match(page, /mouse\.setCursor\(canvas, hotspotX, hotspotY\)/);
+  assert.match(page, /display\.showCursor\(false\)/);
+});
+
 test('the client page drops the reference from the address bar', () => {
   const fs = require('node:fs');
   const page = fs.readFileSync(`${__dirname}/../public/index.html`, 'utf8');

@@ -37,8 +37,21 @@ client.getDisplay().onresize = (width, height) => {
     requestAnimationFrame(fitDisplay);
   }
 };
-document.querySelector('#display').appendChild(client.getDisplay().getElement());
-const mouse = new Guacamole.Mouse(client.getDisplay().getElement());
+const surfaceElement = client.getDisplay().getElement();
+document.querySelector('#display').appendChild(surfaceElement);
+const mouse = new Guacamole.Mouse(surfaceElement);
+// Two pointers otherwise: the browser draws its own, and Guacamole draws the
+// guest's on a layer above the desktop. Handing the guest's cursor image to
+// the browser as a CSS cursor collapses them into one. The browser then draws
+// the shape the guest asked for, at the position the pointer is actually at,
+// so the surviving cursor carries the guest's I-beam and resize arrows without
+// the software layer's redraw.
+display.oncursor = (canvas, hotspotX, hotspotY) => {
+  if (mouse.setCursor(canvas, hotspotX, hotspotY)) display.showCursor(false);
+  // A browser that will not take a CSS cursor image keeps the software cursor,
+  // and hides its own instead. One pointer either way.
+  else surfaceElement.style.cursor = 'none';
+};
 // The second argument is not optional here. Guacamole.Mouse reports positions
 // in local browser pixels, and the display is scaled down to fit the window, so
 // a position sent unscaled addresses a point 1/scale of the way across a
