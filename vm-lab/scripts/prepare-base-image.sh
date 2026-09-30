@@ -270,14 +270,46 @@ EOF
     # Session sharing mirrors the monitor the guest already has: guacd reports
     # "Resize method: none" and the client cannot ask for a different size. The
     # default virtual monitor is 1280x800, which letterboxes in every browser
-    # window. Naming the mode on the kernel command line makes it the connector's
-    # preferred mode, so GNOME selects it at session start with no per-user
-    # configuration to carry or lose.
-    if command -v grubby >/dev/null 2>&1; then
-        grubby --update-kernel=ALL --args="video=Virtual-1:${RDP_RESOLUTION}" >/dev/null 2>&1 \
-            && echo "  Virtual display set to $RDP_RESOLUTION" \
-            || echo "  WARNING: could not set the virtual display mode"
-    fi
+    # window.
+    #
+    # The kernel command line does not move it. "video=Virtual-1:1920x1080" is
+    # accepted, appears in /proc/cmdline after a reboot, and mutter still picks
+    # 1280x800, because that stays the connector's preferred mode and mutter
+    # follows the preference rather than the kernel's mode list. Do not spend
+    # time there.
+    #
+    # A monitors.xml naming the mode does move it, and survives a reboot. The
+    # monitorspec is what the QEMU standard VGA adapter reports; a different
+    # adapter reports different values and this file would not match it.
+    install -d -o "$RDP_DESKTOP_USER" -g "$RDP_DESKTOP_USER" -m 700 "$RDP_HOME/.config"
+    cat > "$RDP_HOME/.config/monitors.xml" <<EOF
+<monitors version="2">
+  <configuration>
+    <logicalmonitor>
+      <x>0</x>
+      <y>0</y>
+      <scale>1</scale>
+      <primary>yes</primary>
+      <monitor>
+        <monitorspec>
+          <connector>Virtual-1</connector>
+          <vendor>RHT</vendor>
+          <product>QEMU Monitor</product>
+          <serial>0x00000000</serial>
+        </monitorspec>
+        <mode>
+          <width>${RDP_RESOLUTION%x*}</width>
+          <height>${RDP_RESOLUTION#*x}</height>
+          <rate>60.000</rate>
+        </mode>
+      </monitor>
+    </logicalmonitor>
+  </configuration>
+</monitors>
+EOF
+    chown "$RDP_DESKTOP_USER:$RDP_DESKTOP_USER" "$RDP_HOME/.config/monitors.xml"
+    chmod 644 "$RDP_HOME/.config/monitors.xml"
+    echo "  Virtual display set to $RDP_RESOLUTION"
 
     if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
         firewall-cmd --permanent --add-port=3389/tcp >/dev/null
