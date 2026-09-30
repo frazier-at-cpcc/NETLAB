@@ -835,8 +835,12 @@
         window.addEventListener('beforeunload', stopPolling);
 
         // --- Student grade panel -------------------------------------------------
-        // Reads /api/my-grades, which derives the session from the signed cookie and
-        // accepts no identifier from the client. Failures here never affect the page.
+        // Reads /api/my-grades, which derives the session from the signed cookie or,
+        // when the LMS iframe has blocked it, from the launch token this page was
+        // rendered with. It accepts no identifier from the client. The token goes in
+        // a header rather than the query string: this is a GET, and a query string
+        // would reach browser history, referrers and access logs.
+        // Failures here never affect the page.
         let gradePollTimer = null;
 
         const GRADE_STATES = {
@@ -847,7 +851,10 @@
 
         async function fetchGrades() {
             try {
-                const response = await fetch('/api/my-grades', { credentials: 'include' });
+                const response = await fetch('/api/my-grades', {
+                    credentials: 'include',
+                    headers: { 'X-Lab-Page-Token': config.pageToken }
+                });
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
                 renderGrades(data.grades);

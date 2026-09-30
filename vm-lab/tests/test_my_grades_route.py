@@ -1,14 +1,18 @@
 """Proves the cookie-scoped GET /api/my-grades proxy in lti-server.
 
 This route's whole risk is one property: a student must never be able
-to make it name another student's session. session_id must come only
-from request.session -- Starlette's signed session cookie -- and the
-route accepts no identifier from the client by any route: not a query
-parameter, not a path segment, not a header, not a JSON body field.
+to make it name another student's session. The session comes from the
+signed lti_session cookie or, when the LMS iframe has blocked it, from
+the launch token this page was rendered with, which is random and
+resolves server-side. No session identifier supplied by the client is
+read: not a query parameter, not a path segment, not a header naming a
+session, not a JSON body field.
 
 Every adversarial test below sets the session cookie to SESSION_A, then
 supplies SESSION_B every way a client could offer an identifier, and
-asserts the upstream call to lab-api still names SESSION_A.
+asserts the upstream call to lab-api still names SESSION_A. The launch
+token is held to the same rule: it is not an identifier, it resolves to
+one, and a cookie already present outranks it.
 
 Reuses the load/discard fresh-import pattern from
 test_lti_main_consumers.py and test_session_secret.py: lti/main.py
@@ -140,9 +144,15 @@ def _client_with_session(lti_main, session_id):
     return client
 
 
-def test_no_session_cookie_returns_empty_and_never_calls_lab_api(
+def test_no_cookie_and_no_launch_token_is_refused_not_answered_empty(
     monkeypatch, load_lti_main
 ):
+    """This route used to answer an empty grade list here, and that is how it
+    hid the fact that it never worked inside an LMS iframe: the cookie is
+    third-party there and blocked, so every real student took this path, the
+    panel saw no grades and hid itself, and nothing anywhere said why. A caller
+    with no resolvable session is now refused. The page ignores an error from
+    the grade poll, so nothing is lost by saying so."""
     lti_main = load_lti_main()
     calls = []
     _patch_http(monkeypatch, lti_main, calls)
@@ -150,9 +160,72 @@ def test_no_session_cookie_returns_empty_and_never_calls_lab_api(
 
     response = client.get("/api/my-grades")
 
-    assert response.status_code == 200
-    assert response.json() == {"grades": []}
+    assert response.status_code == 403
     assert calls == []
+
+
+def test_launch_token_resolves_the_session_when_the_cookie_is_blocked(
+    monkeypatch, load_lti_main
+):
+    """The iframe case. No cookie, one launch token, and the grades that come
+    back belong to the session that token resolves to."""
+    lti_main = load_lti_main()
+    monkeypatch.setattr(
+        lti_main, "session_key_for_page_token", lambda token: "guid:user:course"
+    )
+    calls = []
+    _patch_http(
+        monkeypatch,
+        lti_main,
+        calls,
+        json_body={"session_id": SESSION_A},
+    )
+    client = TestClient(lti_main.app)
+
+    client.get("/api/my-grades", headers={"X-Lab-Page-Token": "a-live-token"})
+
+    # One lookup by key, then the grade fetch for the session it named.
+    assert len(calls) == 2
+    assert calls[0]["url"].endswith("/api/session/by-key/guid%3Auser%3Acourse")
+    assert calls[1]["url"] == (
+        f"{lti_main.ORCHESTRATOR_API}/api/session/{SESSION_A}/grades"
+    )
+
+
+def test_an_unissued_launch_token_resolves_to_nothing(monkeypatch, load_lti_main):
+    lti_main = load_lti_main()
+    monkeypatch.setattr(lti_main, "session_key_for_page_token", lambda token: None)
+    calls = []
+    _patch_http(monkeypatch, lti_main, calls)
+    client = TestClient(lti_main.app)
+
+    response = client.get(
+        "/api/my-grades", headers={"X-Lab-Page-Token": "never-issued"}
+    )
+
+    assert response.status_code == 403
+    assert calls == []
+
+
+def test_the_cookie_wins_over_a_launch_token_naming_another_session(
+    monkeypatch, load_lti_main
+):
+    """A student holding their own cookie cannot be redirected to someone
+    else's session by a token presented alongside it."""
+    lti_main = load_lti_main()
+    monkeypatch.setattr(
+        lti_main, "session_key_for_page_token", lambda token: "guid:other:course"
+    )
+    calls = []
+    _patch_http(monkeypatch, lti_main, calls)
+    client = _client_with_session(lti_main, SESSION_A)
+
+    client.get("/api/my-grades", headers={"X-Lab-Page-Token": "someone-elses-token"})
+
+    assert len(calls) == 1
+    assert calls[0]["url"] == (
+        f"{lti_main.ORCHESTRATOR_API}/api/session/{SESSION_A}/grades"
+    )
 
 
 def test_valid_cookie_calls_lab_api_for_exactly_that_session(

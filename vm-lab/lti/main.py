@@ -152,6 +152,65 @@ def session_key_for_page_token(token: str) -> Optional[str]:
     return redis_client.get(f"{PAGE_TOKEN_PREFIX}{token}")
 
 
+class NoLaunchSession(Exception):
+    """Raised when a caller presents neither a usable cookie nor a live token."""
+
+
+class NoSessionForLaunch(Exception):
+    """Raised when the launch is known but owns no lab session yet."""
+
+
+async def session_id_for_request(request: Request, page_token: str) -> str:
+    """Resolve the caller's own lab session, from the cookie or the page token.
+
+    Two routes need this and they must not drift. GET /api/my-grades and
+    POST /api/my-desktop both answer for whoever is signed in, both refuse to
+    read a session identifier supplied by the client, and both run inside an
+    LMS iframe where lti_session is a third-party cookie that browsers block.
+    A route that consults only the cookie works in a test tab and fails for
+    every real student, which is what happened to the grade panel: it returned
+    an empty list, the panel hid itself, and nothing anywhere said why.
+
+    The cookie is preferred when present. The page token is the fallback and is
+    never a session identifier itself: it is random, it was issued at launch,
+    and it resolves server-side to a course session key. The key cannot be
+    presented directly, because it is "{guid}:{user_id}:{course_id}" and a
+    student who knows a classmate's LTI user id can construct one.
+    """
+    session_id = request.session.get('current_session_id')
+    if session_id:
+        return session_id
+
+    course_key = session_key_for_page_token(page_token)
+    if not course_key:
+        # The two failures need opposite remedies, so they are logged apart: a
+        # page rendered before page tokens existed sends nothing and the
+        # student must reload, while a token that no longer resolves has
+        # expired and the launch must be repeated.
+        logger.warning(
+            "Launch session unresolved: no cookie session and %s",
+            "the page sent no launch token"
+            if not page_token
+            else f"launch token {page_token[:8]}... did not resolve",
+        )
+        raise NoLaunchSession()
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            found = await client.get(
+                f"{ORCHESTRATOR_API}/api/session/by-key/"
+                f"{urllib.parse.quote(course_key, safe='')}"
+            )
+            found.raise_for_status()
+            session_id = found.json().get("session_id")
+    except (httpx.HTTPError, ValueError):
+        session_id = None
+
+    if not session_id:
+        raise NoSessionForLaunch()
+    return session_id
+
+
 def get_instructor_session(token: str) -> Optional[dict]:
     """Get instructor session data from token (from Redis)."""
     if not token:
@@ -1240,21 +1299,36 @@ async def get_my_grades(request: Request):
     """
     Return the signed-in student's own newest grade per lab.
 
-    Takes no parameter. session_id comes only from request.session, which
-    Starlette derives from the signed lti_session cookie set at launch;
-    nothing supplied by the client -- not a query parameter, not a path
-    segment, not a header, not a body field -- is ever read here. A
-    student who edits any of those cannot make this route name a
-    different session, because nothing in this function looks at them.
+    Reads no session identifier from the client. The session comes from the
+    signed lti_session cookie, or, when the LMS iframe has blocked that cookie,
+    from the launch token the page was rendered with, which is random and
+    resolves server-side. A student who edits either cannot make this route
+    name a different session.
+
+    The token arrives in a header rather than a query parameter. This is a GET,
+    so a query parameter would be written to browser history, to the referrer
+    of anything the page loads, and to every access log between here and the
+    student. The header is read by name and is not a session identifier in any
+    case.
 
     Calls lab-api with the service token, the same gate POST /api/cells
     and GET /api/grade-events already use, so the browser never reaches
-    lab-api directly. A missing cookie, a service-token misconfiguration,
-    or any upstream failure all degrade to an empty grade list rather
-    than breaking the loading page.
+    lab-api directly.
+
+    An upstream failure still degrades to an empty grade list, because a
+    student mid-lab should not lose the page over a grade panel. A caller with
+    no resolvable session does not: it is refused. An empty list was how this
+    route hid the fact that it never worked inside an LMS iframe, and the
+    client ignores an error here anyway, so the refusal costs the page nothing
+    and costs the next investigation much less.
     """
-    session_id = request.session.get('current_session_id')
-    if not session_id:
+    try:
+        session_id = await session_id_for_request(
+            request, request.headers.get("x-lab-page-token", "")
+        )
+    except NoLaunchSession:
+        raise HTTPException(status_code=403, detail="No launch session")
+    except NoSessionForLaunch:
         return JSONResponse(content={"grades": []})
 
     headers = service_headers()
@@ -1288,12 +1362,11 @@ async def mint_my_desktop(request: Request):
     """
     Hand the signed-in student one single-use reference to their own desktop.
 
-    Takes no parameter. session_id comes only from request.session, which
-    Starlette derives from the signed lti_session cookie set at launch;
-    nothing supplied by the client -- not a query parameter, not a path
-    segment, not a header, not a body field -- is ever read here. This is the
-    same rule GET /api/my-grades holds, and it matters more here, because the
-    value returned opens an interactive desktop rather than listing scores.
+    Reads no session identifier from the client. The session comes from the
+    signed lti_session cookie, or, when the LMS iframe has blocked it, from the
+    launch token the page was rendered with, by way of the same resolver
+    GET /api/my-grades uses. The rule matters more here, because the value
+    returned opens an interactive desktop rather than listing scores.
 
     It is a separate route, and not part of the session status payload,
     because that payload is relayed by an unauthenticated proxy whose only
@@ -1305,42 +1378,18 @@ async def mint_my_desktop(request: Request):
     DESKTOP_TOKEN_TTL_SECONDS, so a value recovered from history later is
     already spent or stale.
     """
-    session_id = request.session.get('current_session_id')
-    if not session_id:
-        # The cookie is third-party inside an LMS iframe and is routinely
-        # blocked there, so the page presents a token issued at launch. The
-        # token resolves to a session key held server-side; nothing the client
-        # supplies is used as a session key directly.
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        supplied = (body or {}).get("page_token", "")
-        course_key = session_key_for_page_token(supplied)
-        if not course_key:
-            # Distinguish the two ways this fails, because they need opposite
-            # remedies: a page rendered before page tokens existed sends an
-            # empty value and the student must reload, while a token that no
-            # longer resolves has expired and the launch must be repeated.
-            logger.warning(
-                "Desktop mint refused: no cookie session and %s",
-                "the page sent no launch token"
-                if not supplied
-                else f"launch token {supplied[:8]}... did not resolve",
-            )
-            raise HTTPException(status_code=403, detail="No launch session")
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                found = await client.get(
-                    f"{ORCHESTRATOR_API}/api/session/by-key/"
-                    f"{urllib.parse.quote(course_key, safe='')}"
-                )
-                found.raise_for_status()
-                session_id = found.json().get("session_id")
-        except (httpx.HTTPError, ValueError):
-            session_id = None
-        if not session_id:
-            raise HTTPException(status_code=409, detail="No session for this launch")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        session_id = await session_id_for_request(
+            request, (body or {}).get("page_token", "")
+        )
+    except NoLaunchSession:
+        raise HTTPException(status_code=403, detail="No launch session")
+    except NoSessionForLaunch:
+        raise HTTPException(status_code=409, detail="No session for this launch")
 
     if not RDP_GATEWAY_URL:
         logger.error("RDP_GATEWAY_URL is not configured on the LTI server")
