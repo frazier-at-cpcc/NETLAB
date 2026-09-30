@@ -160,6 +160,22 @@ else
     grdctl --system rdp disable 2>/dev/null || true
     systemctl disable --now gnome-remote-desktop.service 2>/dev/null || true
 
+    # So would the headless daemon, and it is the harder of the two to see.
+    # Its unit declares "Conflicts=gnome-remote-desktop.service", so an image
+    # that once ran headless keeps a wants-symlink under the desktop user's
+    # own configuration, starts headless with the GNOME session, and silently
+    # prevents session sharing from ever running. An image prepared by an
+    # earlier revision of this script, or full-cloned from one, arrives in
+    # exactly that state, so the symlink is removed by path rather than by
+    # "systemctl --user disable", which needs a session bus that does not
+    # exist yet.
+    rm -f "$RDP_HOME/.config/systemd/user/gnome-session.target.wants/gnome-remote-desktop-headless.service"
+
+    # The headless daemon keeps its credentials in this file rather than in
+    # the Secret Service. Leaving it behind lets a stale credential name from
+    # a previous preparation outlive the preparation that replaced it.
+    rm -f "$GRD_USER_DIR/credentials.ini"
+
     python3 - "$RDP_DESKTOP_USER" <<'PYEOF'
 import configparser
 import sys
@@ -233,19 +249,33 @@ EOF
     fi
 
     sleep 5
-    STORED="$(runuser -l "$RDP_DESKTOP_USER" -c "
-        export XDG_RUNTIME_DIR=/run/user/$RDP_UID
-        export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$RDP_UID/bus
-        grdctl status" 2>/dev/null | grep -c 'Username: (hidden)')"
-    if ss -lnt 2>/dev/null | grep -q ':3389' && [ "$STORED" = "1" ]; then
-        echo "  Browser RDP listening on 3389, sharing the desktop of '$RDP_DESKTOP_USER'"
-    elif ss -lnt 2>/dev/null | grep -q ':3389'; then
-        # Binding the port proves nothing on its own. A daemon whose
-        # credentials failed to store listens and then refuses every client.
-        echo "  WARNING: RDP is listening but stored no credentials; every client will be refused"
-    else
+    # Neither a listening port nor a stored credential proves a student can
+    # connect. Both were true of the image that refused every client, because
+    # the daemon holding the port was the headless one and the credential it
+    # held named a different user. The only check that would have caught it is
+    # an authentication, so that is the check: FreeRDP is installed above for
+    # this purpose, and "+auth-only" stops at the end of the handshake without
+    # opening a session.
+    if ! ss -lnt 2>/dev/null | grep -q ':3389'; then
         echo "  WARNING: RDP configured but nothing is listening on 3389"
         loginctl list-sessions --no-legend || true
+    elif runuser -l "$RDP_DESKTOP_USER" -c "
+            export XDG_RUNTIME_DIR=/run/user/$RDP_UID
+            export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$RDP_UID/bus
+            systemctl --user is-active --quiet gnome-remote-desktop.service"; then
+        if timeout 30 xfreerdp "/v:127.0.0.1:3389" "/u:$RDP_USER" \
+                "/p:$RDP_PASSWORD" /cert:ignore +auth-only 2>&1 \
+                | grep -q 'ERRCONNECT_AUTHENTICATION_FAILED'; then
+            echo "  WARNING: RDP refused '$RDP_USER'; the stored credential names someone else"
+        else
+            echo "  Browser RDP listening on 3389, sharing the desktop of '$RDP_DESKTOP_USER'"
+            echo "  Authenticated as '$RDP_USER' against the running session"
+        fi
+    else
+        # This is the headless or system daemon answering. It will serve an
+        # empty second monitor at best and refuse every client at worst.
+        echo "  WARNING: something other than session sharing holds 3389"
+        ss -lntp 2>/dev/null | grep ':3389' || true
     fi
 fi
 
