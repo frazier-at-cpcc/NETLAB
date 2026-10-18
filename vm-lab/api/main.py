@@ -18,6 +18,7 @@ import base64
 import json
 import re
 import ipaddress
+import socket
 from dataclasses import dataclass
 from typing import Optional, List
 from contextlib import asynccontextmanager
@@ -49,6 +50,8 @@ try:
         session_grade_summary,
     )
     import access
+    import csc228_home
+    import idle_reclaim
     from lrs_client import parse_stored
     from pox_delivery import pox_delivery_loop
     from service_auth import SERVICE_TOKEN_HEADER, ServiceTokenError, check_service_token, service_token
@@ -74,6 +77,8 @@ except ImportError:
         session_grade_summary,
     )
     from api import access
+    from api import csc228_home
+    from api import idle_reclaim
     from api.lrs_client import parse_stored
     from api.pox_delivery import pox_delivery_loop
     from api.service_auth import SERVICE_TOKEN_HEADER, ServiceTokenError, check_service_token, service_token
@@ -202,6 +207,11 @@ RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/var/lib/vm-lab/recordings")
 # Session defaults
 DEFAULT_SESSION_HOURS = 4
 MAX_SESSION_HOURS = 8
+# How long a session may sit in provisioning or starting before it is
+# treated as dead. A clone and boot takes a few minutes, so this is
+# deliberately generous: reaping a session that is merely slow would destroy
+# a VM while a student watches it come up.
+STUCK_SESSION_MINUTES = int(os.getenv("STUCK_SESSION_MINUTES", "30"))
 
 # Docker network for ttyd containers
 DOCKER_NETWORK = "vm-lab_lab-network"
@@ -356,6 +366,7 @@ class ProvisionRequest(BaseModel):
     course_title: Optional[str] = None
     assignment_id: Optional[str] = None
     assignment_title: Optional[str] = None
+    lab_slug: Optional[str] = None
     session_hours: Optional[int] = DEFAULT_SESSION_HOURS
 
 
@@ -475,6 +486,10 @@ class SessionStatus(BaseModel):
     steps: List[ProvisioningStep]
     progress_percent: int
     estimated_seconds_remaining: Optional[int] = None
+    # Whether this session's files survive it ending. False until
+    # provision_home is wired, and false per-session when an attach fails,
+    # so the page never promises persistence a student does not have.
+    persistent_home: bool = False
     # Input to the access map, never part of the payload. The browser learns
     # that a desktop exists, not what the record holds.
     desktop_record: bool = Field(default=False, exclude=True)
@@ -756,18 +771,43 @@ def wait_for_task(proxmox: ProxmoxAPI, node: str, upid: str, timeout: int = 300)
 
 @dataclass(frozen=True)
 class TemplateChoice:
-    """What a launch clones. Resolved once, then carried, so the decision is
-    made in one place and logged with the session."""
+    """What a launch clones, and at what size. Resolved once, then carried,
+    so the decision is made in one place and logged with the session.
+
+    cores and memory_mb are None when the course states no shape, which keeps
+    the deployment defaults VM_VCPUS and VM_RAM_MB. clone_vm resolves them;
+    nothing else reads them."""
 
     template_id: int
     snapshot_name: str
+    cores: Optional[int] = None
+    memory_mb: Optional[int] = None
+    session_hours: Optional[int] = None
+    terminal_persist: bool = False
+    terminal_recording: bool = True
 
 
 COURSE_TEMPLATE_SQL = """
-SELECT template_id, snapshot_name
+SELECT template_id, snapshot_name, cores, memory_mb
 FROM course_templates
 WHERE course_id = $1
 """
+
+
+def _optional_column(row, name: str):
+    """Read a column that migration 007 may not have added yet.
+
+    006 made the course mapping additive: a deployment without the table
+    falls back to the deployment default rather than failing. The shape
+    columns keep that promise. A row from a database still on 006 has no
+    cores or memory_mb, and asking for them by subscript raises rather than
+    degrading, so the absence is treated as "course states no shape".
+    """
+    try:
+        value = row[name]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return value
 
 
 async def resolve_course_template(db, course_id: Optional[str]) -> TemplateChoice:
@@ -801,7 +841,70 @@ async def resolve_course_template(db, course_id: Optional[str]) -> TemplateChoic
     return TemplateChoice(
         template_id=row["template_id"],
         snapshot_name=PROXMOX_TEMPLATE_SNAPSHOT if stored is None else stored,
+        cores=_optional_column(row, "cores"),
+        memory_mb=_optional_column(row, "memory_mb"),
     )
+
+
+LAB_TEMPLATE_SQL = """
+SELECT slug_prefix, template_id, snapshot_name, cores, memory_mb,
+       session_hours, terminal_persist, terminal_recording
+FROM lab_templates
+WHERE $1 LIKE slug_prefix || '%'
+ORDER BY length(slug_prefix) DESC
+LIMIT 1
+"""
+
+
+async def resolve_lab_template(
+    db, lab_slug: Optional[str], course_id: Optional[str]
+) -> TemplateChoice:
+    """Return the template a launch clones, preferring the lab slug.
+
+    Order is slug prefix, then course, then deployment default. The slug wins
+    because it names the course family and outlives every shell: csc228-lab-02
+    is the same slug in every section and every term, while course_id changes
+    with each new Brightspace shell and silently stops matching.
+
+    The longest matching prefix wins, so a narrower rule can override a
+    broader one without deleting it.
+
+    Falls through to resolve_course_template on any failure, including a
+    database still on 007 where the table does not exist, so a course that
+    relies on the shell mapping keeps working.
+    """
+    if lab_slug:
+        try:
+            row = await db.fetchrow(LAB_TEMPLATE_SQL, lab_slug)
+        except Exception as exc:
+            logger.warning(
+                "Lab template lookup failed for %s, falling back to the course "
+                "mapping: %s",
+                lab_slug,
+                type(exc).__name__,
+            )
+            row = None
+        if row:
+            stored = row["snapshot_name"]
+            logger.info(
+                "Lab slug %s matched prefix %s, cloning template %s",
+                lab_slug, row["slug_prefix"], row["template_id"],
+            )
+            persist = _optional_column(row, "terminal_persist")
+            recording = _optional_column(row, "terminal_recording")
+            return TemplateChoice(
+                template_id=row["template_id"],
+                snapshot_name=PROXMOX_TEMPLATE_SNAPSHOT if stored is None else stored,
+                cores=_optional_column(row, "cores"),
+                memory_mb=_optional_column(row, "memory_mb"),
+                session_hours=_optional_column(row, "session_hours"),
+                terminal_persist=bool(persist),
+                # A database still on 008 has no column; recording stays on,
+                # which is what every course does today.
+                terminal_recording=True if recording is None else bool(recording),
+            )
+
+    return await resolve_course_template(db, course_id)
 
 
 def clone_vm(
@@ -857,9 +960,22 @@ def clone_vm(
     if PROXMOX_MTU:
         net0 += f",mtu={PROXMOX_MTU}"
 
+    # Shape comes from the course when it states one, otherwise from the
+    # deployment. sockets is pinned to 1 and cores carries the whole vCPU
+    # count, because Proxmox multiplies sockets by cores: cores=8 against a
+    # template built with 2 sockets yields 16 vCPUs, not 8. Pinning here
+    # makes the requested number the delivered number whatever the template
+    # was built with.
+    cores = choice.cores if choice.cores else VM_VCPUS
+    memory_mb = choice.memory_mb if choice.memory_mb else VM_RAM_MB
+    logger.info(
+        f"Configuring VM {vmid}: {cores} vCPU (1 socket), {memory_mb} MB, net0={net0}"
+    )
+
     proxmox.nodes(PROXMOX_NODE).qemu(vmid).config.put(
-        memory=VM_RAM_MB,
-        cores=VM_VCPUS,
+        memory=memory_mb,
+        sockets=1,
+        cores=cores,
         net0=net0,
         description=f"Student lab VM - Session: {session_id}"
     )
@@ -1095,27 +1211,142 @@ http:
         logger.error("Failed to write core Traefik routes: %s", type(exc).__name__)
 
 
-def write_traefik_route(session_id: str, container_name: str, domain: str):
-    """Write a Traefik route config file for a ttyd session."""
+# Per-session browser channels served from inside the VM. The terminal is a
+# container and is always routed; these are ports on the VM itself and are
+# routed only when a course asks for them, so a course whose image listens on
+# neither does not get two routes to a closed port.
+# app is 3000, not 8080. Labs 3, 7 and 8 run llama-server, and the Lab 8
+# container, on 8080 inside the VM, so publishing Open WebUI there would
+# collide with the student's own server in the one lab that needs both.
+VM_CHANNEL_PORTS = {"jupyter": 8888, "app": 3000}
+
+# Channels whose port must answer before their route is published.
+#
+# JupyterLab is enabled at boot, so a closed 8888 after the guest agent
+# answers is a real fault, most likely the networkd wait-online stall. A
+# route to it would 502 and read to a student as a broken lab.
+#
+# Open WebUI on 3000 is deliberately absent: it stays stopped until the
+# student runs `csc228-webui start` in the Lab 7 voice section, so its route
+# publishes unconditionally and the expected 502 is explained by the lab
+# text. Probing it would drop the route every student needs.
+PROBED_CHANNELS = frozenset({"jupyter"})
+# ponytail: blocking connect, called from sync spawn code. Short on purpose.
+# Move to asyncio.open_connection if spawn ever becomes async.
+CHANNEL_PROBE_TIMEOUT_SECONDS = 2
+
+
+def port_open(host: str, port: int,
+              timeout: float = CHANNEL_PROBE_TIMEOUT_SECONDS) -> bool:
+    """True when something accepts a TCP connection. Never raises."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def ready_channels(vm_ip: Optional[str], channels) -> list:
+    """Narrow requested channels to the ones worth publishing.
+
+    A probed channel whose port does not answer is dropped, so the student
+    gets a terminal rather than a route that 502s. An unprobed channel is
+    always published.
+
+    Without an address nothing can be probed, so only unprobed channels
+    survive.
+    """
+    ready = []
+    for channel in channels:
+        if channel not in VM_CHANNEL_PORTS:
+            logger.warning("Unknown channel %s requested, skipping", channel)
+            continue
+        if channel not in PROBED_CHANNELS:
+            ready.append(channel)
+            continue
+        if not vm_ip:
+            logger.warning("No address to probe for channel %s, skipping", channel)
+            continue
+        if port_open(vm_ip, VM_CHANNEL_PORTS[channel]):
+            ready.append(channel)
+        else:
+            logger.warning(
+                "Channel %s closed on %s, publishing without it",
+                channel, VM_CHANNEL_PORTS[channel],
+            )
+    return ready
+
+
+def write_traefik_route(
+    session_id: str,
+    container_name: str,
+    domain: str,
+    vm_ip: str = None,
+    channels: tuple = (),
+):
+    """Write every route for one session into one file.
+
+    One file and one write, rather than a later second pass, because the VM
+    address is already known here: the ttyd container is built around an ssh
+    command naming it. Splitting the write would mean a session whose file
+    was rewritten mid-provision, and Traefik reloads on file change.
+
+    `channels` names the VM-side channels to publish, from VM_CHANNEL_PORTS.
+    Empty is the default and reproduces exactly the file written before this
+    existed, so every course that asks for nothing is untouched. Each channel
+    is a separate hostname rather than a path prefix, because the wildcard
+    tunnel ingress matches one label and because JupyterLab and Open WebUI
+    both expect to be served at the root.
+    """
     route_file = os.path.join(TRAEFIK_DYNAMIC_DIR, f"session-{session_id}.yml")
-    config = f"""# Auto-generated route for session {session_id}
-http:
-  routers:
-    ttyd-{session_id}:
+
+    routers = f"""    ttyd-{session_id}:
       rule: "Host(`lab-{session_id}.{domain}`)"
       entryPoints:
         - web
       service: ttyd-{session_id}
-  services:
-    ttyd-{session_id}:
+"""
+    services = f"""    ttyd-{session_id}:
       loadBalancer:
         servers:
           - url: "http://{container_name}:7681"
 """
+
+    for channel in channels:
+        port = VM_CHANNEL_PORTS.get(channel)
+        if port is None:
+            logger.warning("Unknown session channel %r, not routed", channel)
+            continue
+        if not vm_ip:
+            logger.warning(
+                "Channel %r needs the VM address and none was given, not routed",
+                channel,
+            )
+            continue
+        routers += f"""    {channel}-{session_id}:
+      rule: "Host(`{channel}-{session_id}.{domain}`)"
+      entryPoints:
+        - web
+      service: {channel}-{session_id}
+"""
+        services += f"""    {channel}-{session_id}:
+      loadBalancer:
+        servers:
+          - url: "http://{vm_ip}:{port}"
+"""
+
+    config = (
+        f"# Auto-generated routes for session {session_id}\n"
+        "http:\n  routers:\n" + routers + "  services:\n" + services
+    )
     try:
         with open(route_file, 'w') as f:
             f.write(config)
-        logger.info(f"Wrote Traefik route config: {route_file}")
+        logger.info(
+            "Wrote Traefik routes for session %s: terminal%s",
+            session_id,
+            "".join(f", {c}" for c in channels),
+        )
     except Exception as e:
         logger.error(f"Failed to write Traefik route config: {e}")
 
@@ -1136,9 +1367,22 @@ def spawn_ttyd_container(
     vm_ip: str,
     domain: str,
     recording_path: str,
-    timing_path: str
+    timing_path: str,
+    persist: bool = False,
+    record: bool = True,
 ) -> Optional[str]:
-    """Spawn a ttyd container for web terminal access with session recording."""
+    """Spawn a ttyd container for web terminal access.
+
+    `persist` wraps the remote shell in tmux. ttyd runs its command once per
+    client connection, so without it a closed browser tab kills the ssh
+    session and everything running in it; a three-hour lab loses its work to
+    a dropped network. `tmux new-session -A` attaches to the existing shell
+    when one is there and creates it when it is not, so the shell lives on
+    the VM rather than in the browser connection.
+
+    `record` wraps the whole thing in `script`. Off for families that do not
+    record, which also means no recording is finalized on teardown.
+    """
     if not docker_client:
         return None
 
@@ -1175,19 +1419,32 @@ def spawn_ttyd_container(
             }
         else:
             # Direct SSH to the VM only
-            ssh_command = f"sshpass -e ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip}"
+            remote = ""
+            if persist:
+                # -A attaches to `lab` when it exists and creates it when it
+                # does not, so a reconnect lands in the same shell.
+                remote = " tmux new-session -A -s lab"
+            ssh_command = (
+                f"sshpass -e ssh -t -o StrictHostKeyChecking=no "
+                f"-o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip}{remote}"
+            )
             env_vars = {
                 "SSHPASS": SSH_PASSWORD,
             }
 
         # Build the ttyd command with script recording wrapper
-        ttyd_command = [
-            "ttyd", "--writable", "--port", "7681",
-            "script", "-q", "-f",
-            f"-t/recordings/{timing_rel_path}",
-            f"/recordings/{recording_rel_path}",
-            "-c", ssh_command
-        ]
+        ttyd_command = ["ttyd", "--writable", "--port", "7681"]
+        if record:
+            ttyd_command += [
+                "script", "-q", "-f",
+                f"-t/recordings/{timing_rel_path}",
+                f"/recordings/{recording_rel_path}",
+                "-c", ssh_command,
+            ]
+        else:
+            # No script wrapper, so no recording is written and none is
+            # finalized on teardown. sh -c keeps the quoting identical.
+            ttyd_command += ["sh", "-c", ssh_command]
 
         # Spawn ttyd container with recording
         # Use custom image with SSH client installed
@@ -1256,6 +1513,8 @@ async def cleanup_loop(db: asyncpg.Pool):
         try:
             await asyncio.sleep(300)  # Check every 5 minutes
             await cleanup_expired_sessions(db)
+            await reap_stuck_sessions(db)
+            await reclaim_idle_sessions(db)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -1274,7 +1533,140 @@ async def cleanup_expired_sessions(db: asyncpg.Pool):
 
     for row in expired:
         logger.info(f"Cleaning up expired session: {row['session_id']}")
-        await destroy_session_internal(db, row['session_id'], row['vm_id'])
+        await destroy_session_internal(
+            db, row['session_id'], row['vm_id'], reason="expired"
+        )
+
+
+STUCK_SESSION_SQL = """
+SELECT session_id, vm_id, status
+FROM vm_sessions
+WHERE status IN ('provisioning', 'starting')
+  AND created_at < CURRENT_TIMESTAMP - make_interval(mins => $1)
+"""
+
+
+async def reap_stuck_sessions(db: asyncpg.Pool):
+    """Destroy sessions that never finished coming up. Never raises.
+
+    Only 'running' sessions were ever reaped, so a session whose clone or
+    boot failed sat in 'provisioning' forever. Two things made that worse
+    than untidy.
+
+    The student sees a provisioning page that will never finish, because
+    find_existing_session returns sessions in these states.
+
+    And since one live lab per class is now enforced by a partial unique
+    index over exactly these states, a stuck session blocks the student from
+    starting another one. Before that index they could launch again and get
+    a second VM; now the failed clone locks them out until someone
+    intervenes. This closes a door that change opened.
+
+    Teardown already tolerates a session with no VM, which matters because a
+    session that failed early has a NULL vm_id.
+    """
+    try:
+        stuck = await db.fetch(STUCK_SESSION_SQL, STUCK_SESSION_MINUTES)
+    except Exception as exc:
+        logger.warning("Could not list stuck sessions: %s", type(exc).__name__)
+        return
+
+    for row in stuck:
+        logger.warning(
+            "Reaping session %s stuck in %s for over %s minutes",
+            row["session_id"], row["status"], STUCK_SESSION_MINUTES,
+        )
+        try:
+            await destroy_session_internal(
+                db, row["session_id"], row["vm_id"], reason="provisioning_timeout"
+            )
+        except Exception as exc:
+            # One bad row must not stop the rest from being released.
+            logger.error(
+                "Failed to reap stuck session %s: %s",
+                row["session_id"], type(exc).__name__,
+            )
+
+
+IDLE_CANDIDATE_SQL = """
+SELECT s.session_id, s.vm_id, s.vm_ip, s.idle_since, t.idle_reclaim_minutes
+FROM vm_sessions s
+JOIN lab_templates t ON s.lab_slug LIKE t.slug_prefix || '%'
+WHERE s.status = 'running'
+  AND t.idle_reclaim_minutes IS NOT NULL
+"""
+
+
+async def _probe_http_json(url: str, timeout: float):
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.json()
+
+
+async def reclaim_idle_sessions(db: asyncpg.Pool):
+    """Destroy sessions whose student has gone for good. Never raises.
+
+    Only families that set idle_reclaim_minutes are considered, so every
+    other course is untouched. A session must look idle continuously for the
+    whole window: idle_since is cleared the moment any signal reports
+    activity, so a student who returns resets the clock.
+
+    Any failure holds the VM. Reclaiming a working lab is far worse than
+    holding an abandoned one.
+    """
+    if not proxmox_api:
+        return
+
+    try:
+        candidates = await db.fetch(IDLE_CANDIDATE_SQL)
+    except Exception as exc:
+        logger.warning(
+            "Idle reclaim could not list candidates: %s", type(exc).__name__
+        )
+        return
+
+    for row in candidates:
+        session_id = row["session_id"]
+        try:
+            idle = await idle_reclaim.session_is_idle(
+                proxmox_api, PROXMOX_NODE, row["vm_id"], row["vm_ip"],
+                csc228_home.guest_exec, _probe_http_json,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Idle probe failed for %s, holding the VM: %s",
+                session_id, type(exc).__name__,
+            )
+            continue
+
+        if not idle:
+            if row["idle_since"] is not None:
+                await db.execute(
+                    "UPDATE vm_sessions SET idle_since = NULL WHERE session_id = $1",
+                    session_id,
+                )
+            continue
+
+        if row["idle_since"] is None:
+            await db.execute(
+                "UPDATE vm_sessions SET idle_since = CURRENT_TIMESTAMP "
+                "WHERE session_id = $1",
+                session_id,
+            )
+            logger.info("Session %s looks idle, starting the clock", session_id)
+            continue
+
+        idle_for = (datetime.now(timezone.utc) - row["idle_since"]).total_seconds()
+        if idle_for < row["idle_reclaim_minutes"] * 60:
+            continue
+
+        logger.info(
+            "Reclaiming %s after %.0f minutes idle", session_id, idle_for / 60
+        )
+        await destroy_session_internal(
+            db, session_id, row["vm_id"], reason="idle_reclaimed"
+        )
 
 
 async def register_desktop_access(db, session_id: str, vm_ip: str) -> bool:
@@ -1342,8 +1734,24 @@ async def revoke_session_access(db, session_id: str) -> None:
         )
 
 
-async def destroy_session_internal(db: asyncpg.Pool, session_id: str, vm_id: int):
-    """Internal function to destroy a session."""
+async def destroy_session_internal(
+    db: asyncpg.Pool, session_id: str, vm_id: int, reason: str = "ended"
+):
+    """Internal function to destroy a session.
+
+    `reason` is recorded so a student who returns to a destroyed VM can be
+    told why it went away. Silent destruction looks like a crash.
+    """
+    try:
+        await db.execute(
+            "UPDATE vm_sessions SET destroyed_reason = $2 WHERE session_id = $1",
+            session_id, reason,
+        )
+    except Exception as exc:
+        # A missing column on an older database must not block teardown.
+        logger.warning(
+            "Could not record destroy reason for %s: %s", session_id, type(exc).__name__
+        )
     # Revoke access before anything it names disappears.
     await revoke_session_access(db, session_id)
 
@@ -1667,7 +2075,7 @@ async def get_session_status(session_id: str):
         """
         SELECT session_id, url, vm_ip, status, status_message,
                user_name, course_title, assignment_title,
-               created_at, expires_at, started_at
+               created_at, expires_at, started_at, home_attached
         FROM vm_sessions
         WHERE session_id = $1
         """,
@@ -1804,7 +2212,11 @@ async def get_session_status(session_id: str):
         error_message=status_message if status == 'error' else None,
         steps=steps,
         progress_percent=progress,
-        estimated_seconds_remaining=estimated_remaining
+        estimated_seconds_remaining=estimated_remaining,
+        # A database still on 011 has no column, which reads as no
+        # persistence. The page then tells the student to download their
+        # work, which is the safe answer when we do not know.
+        persistent_home=bool(_optional_column(row, "home_attached")),
     )
 
 
@@ -1842,10 +2254,6 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
     session_id = generate_session_id()
     vm_name = f"student-{session_id}"
 
-    # Calculate expiry
-    session_hours = min(request.session_hours or DEFAULT_SESSION_HOURS, MAX_SESSION_HOURS)
-    expires_at = datetime.utcnow() + timedelta(hours=session_hours)
-
     # Generate recording paths
     started_at = datetime.utcnow()
     recording_path, timing_path = get_recording_path(
@@ -1861,9 +2269,51 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
     # Clone VM from the template this course resolves to. An unmapped course
     # resolves to the deployment default, which is what it cloned before this
     # lookup existed.
-    template_choice = await resolve_course_template(db, request.course_id)
+    template_choice = await resolve_lab_template(
+        db, request.lab_slug, request.course_id
+    )
+
+    # Expiry follows the template, because the course family is what knows
+    # how long its labs run. A four-hour lab against the four-hour default
+    # loses the VM to the first break a student takes.
+    session_hours = min(
+        request.session_hours or template_choice.session_hours or DEFAULT_SESSION_HOURS,
+        MAX_SESSION_HOURS,
+    )
+    expires_at = datetime.utcnow() + timedelta(hours=session_hours)
 
     course_session_key = request.course_session_key or request.session_key
+
+    # One lab per student per class. A second launch returns the session the
+    # student already has rather than cloning another VM: each one holds a
+    # slot out of roughly twelve on this host, and two terminals onto two
+    # different VMs is a student doing a lab twice and submitting the wrong
+    # one. The partial unique index in migration 010 is what makes this safe
+    # under a double click; this check is what makes it friendly.
+    if course_session_key:
+        existing = await db.fetchrow(
+            """
+            SELECT session_id, url, status, expires_at
+            FROM vm_sessions
+            WHERE course_session_key = $1
+              AND status IN ('provisioning', 'starting', 'running')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            course_session_key,
+        )
+        if existing:
+            logger.info(
+                "Reusing session %s for course key: already %s",
+                existing["session_id"], existing["status"],
+            )
+            return {
+                "session_id": existing["session_id"],
+                "url": existing["url"],
+                "status": existing["status"],
+                "expires_at": existing["expires_at"],
+                "reused": True,
+            }
 
     # The row is written before the clone, and the clone happens in the
     # background task with everything else.
@@ -1880,12 +2330,13 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
         INSERT INTO vm_sessions (
             session_id, session_key, course_session_key, user_id, user_email, user_name,
             course_id, course_title, assignment_id, assignment_title,
-            vm_ip, vm_name, vm_id, url, status, expires_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11, NULL, $12, 'provisioning', $13)
+            vm_ip, vm_name, vm_id, url, status, expires_at, lab_slug
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11, NULL, $12, 'provisioning', $13, $14)
         """,
         session_id, request.session_key, course_session_key, request.user_id, request.user_email,
         request.user_name, request.course_id, request.course_title,
-        request.assignment_id, request.assignment_title, vm_name, url, expires_at
+        request.assignment_id, request.assignment_title, vm_name, url, expires_at,
+        request.lab_slug
     )
 
     grade_token = await assign_grade_token(db, session_id)
@@ -2086,7 +2537,9 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
             # Spawn ttyd container
             container_id = spawn_ttyd_container(
                 session_id, vm_ip, DOMAIN,
-                recording_path, timing_path
+                recording_path, timing_path,
+                persist=template_choice.terminal_persist,
+                record=template_choice.terminal_recording,
             )
 
             if container_id:

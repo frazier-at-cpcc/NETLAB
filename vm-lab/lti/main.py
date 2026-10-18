@@ -1480,6 +1480,7 @@ async def provision_student_vm(request: Request):
                     "user_email": user_email,
                     "user_name": user_name,
                     "course_id": course_id,
+                    "lab_slug": request.session.get('lab_slug', ''),
                     "course_title": course_title,
                     "assignment_id": assignment_id,
                     "assignment_title": assignment_title
@@ -1594,6 +1595,7 @@ async def recreate_student_session(request: Request, session_id: str):
                     "user_email": user_email,
                     "user_name": user_name,
                     "course_id": course_id,
+                    "lab_slug": request.session.get('lab_slug', ''),
                     "course_title": course_title,
                     "assignment_id": assignment_id,
                     "assignment_title": assignment_title
@@ -1669,6 +1671,89 @@ async def get_demo_vm(request: Request):
     return JSONResponse(content={"status": "inactive"})
 
 
+@app.get("/instructor/student-view")
+async def instructor_student_view(request: Request):
+    """Render the student landing page against the instructor's demo VM.
+
+    An instructor launch returns the dashboard and never reaches
+    ``check_or_provision_vm``'s student path, so an instructor cannot see the
+    page their students see. This route renders that page, which is the only
+    place Open Terminal, Open Desktop and the grade panel appear.
+
+    It renders against the demo VM rather than provisioning anything of its
+    own. Calling the student path with the instructor's own identity would
+    mint a session under a real course session key and, on a graded link,
+    an outcome handle, which puts a preview one step away from writing to a
+    gradebook. The demo VM already exists for this purpose and lives in its
+    own ``demo:`` key namespace.
+
+    The grade panel will show no grades, because a demo session has none. That
+    is the honest result rather than a broken one: the panel reports an empty
+    state exactly as it would for a student who has not been graded yet.
+    """
+    token = get_token_from_request(request)
+    session_data = get_instructor_session(token)
+    if not session_data or not session_data.get('instructor'):
+        raise HTTPException(status_code=403, detail="Instructor access required")
+
+    demo_session_id = session_data.get('demo_vm_session_id')
+    if not demo_session_id:
+        return HTMLResponse(
+            content=(
+                "<h1>No demo VM</h1>"
+                "<p>The student view renders against your demo VM. Launch one "
+                "from the dashboard first, then open this view again.</p>"
+            ),
+            status_code=409,
+        )
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.get(
+                f"{ORCHESTRATOR_API}/api/session/{demo_session_id}"
+            )
+            vm_session = response.json() if response.status_code == 200 else {}
+        except httpx.RequestError as exc:
+            logger.error(f"Student view could not read the demo session: {exc}")
+            vm_session = {}
+
+    status = vm_session.get('status')
+    if status not in ('running', 'starting'):
+        return HTMLResponse(
+            content=(
+                "<h1>Demo VM is not running</h1>"
+                "<p>Launch a demo VM from the dashboard, then open this view "
+                "again.</p>"
+            ),
+            status_code=409,
+        )
+
+    demo_session_key = session_data.get('demo_vm_session_key')
+    return templates.TemplateResponse(
+        "lab_loading.html",
+        {
+            "request": request,
+            # Only a demo session key is ever handed out here. A page token
+            # for a real student's key would let an instructor read that
+            # student's session through the student endpoints.
+            "page_token": (
+                issue_page_token(demo_session_key) if demo_session_key else ""
+            ),
+            "session_id": demo_session_id,
+            "lab_url": vm_session.get('url', ''),
+            "user_name": f"{session_data.get('user_name', 'Instructor')} (student view)",
+            "course_title": session_data.get('course_title', 'Demo'),
+            "assignment_title": "Instructor Demo VM",
+            "initial_status": status,
+            "session_key": demo_session_key or "",
+            "user_id": session_data.get('user_id', ''),
+            "user_email": session_data.get('user_email', ''),
+            "course_id": session_data.get('course_id', ''),
+            "assignment_id": "instructor-demo",
+        },
+    )
+
+
 @app.post("/api/demo-vm")
 async def launch_demo_vm(request: Request):
     """Launch a demo VM for the instructor."""
@@ -1717,6 +1802,7 @@ async def launch_demo_vm(request: Request):
                     "user_email": user_email,
                     "user_name": f"{user_name} (Demo)",
                     "course_id": course_id,
+                    "lab_slug": request.session.get('lab_slug', ''),
                     "course_title": course_title,
                     "assignment_id": "instructor-demo",
                     "assignment_title": "Instructor Demo VM",
@@ -1735,9 +1821,13 @@ async def launch_demo_vm(request: Request):
             vm_data = provision_response.json()
             demo_session_id = vm_data.get('session_id')
 
-            # Store the demo VM session ID in the instructor's token data
+            # Store the demo VM session ID in the instructor's token data.
+            # The session key is kept alongside it because the student view
+            # needs it to issue a page token, and the key is generated here
+            # with a random suffix that cannot be recomputed later.
             if token and session_data:
                 session_data['demo_vm_session_id'] = demo_session_id
+                session_data['demo_vm_session_key'] = demo_session_key
                 update_instructor_session(token, session_data)
 
             logger.info(f"Provisioned demo VM for {user_name}: {vm_data.get('url')}")

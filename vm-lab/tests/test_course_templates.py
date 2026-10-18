@@ -353,3 +353,83 @@ def test_the_clone_is_awaited_off_the_event_loop():
     assert "asyncio.to_thread(\n                    clone_vm" in source, (
         "the clone must run in a worker thread, not on the event loop"
     )
+
+
+# --- per-course clone shape (migration 007) ---------------------------
+
+
+def _clone_capturing_config(api_main, choice, monkeypatch=None):
+    """Run clone_vm against a fake Proxmox and return the config.put kwargs.
+
+    The shape is applied in the second qemu() call, the one that configures
+    the new VM, so config.put is what has to be captured rather than clone.
+    """
+    captured = {}
+
+    class _FakeQemu:
+        def __init__(self, vmid):
+            self.clone = type("C", (), {"post": lambda *a, **k: "UPID:fake"})()
+            self.config = type("C", (), {"put": lambda _s, **kw: captured.update(kw)})()
+
+    class _FakeProxmox:
+        def __init__(self):
+            self.cluster = type(
+                "C", (), {"resources": type("R", (), {"get": lambda *a, **k: []})()}
+            )()
+            self.nodes = lambda _name: _FakeQemu.__new__(_FakeQemu) or None
+
+    class _FakeNode:
+        def qemu(self, vmid):
+            return _FakeQemu(vmid)
+
+    prox = _FakeProxmox()
+    prox.nodes = lambda _name: _FakeNode()
+    api_main.clone_vm(prox, "a1b2c3d4", "vm-a1b2c3d4", choice, wait=lambda *a, **k: True)
+    return captured
+
+
+def test_a_course_shape_reaches_the_vm_configuration():
+    """CSC-228 measures inference performance and assumes 8 vCPU and 24 GB.
+    The deployment default is 4 and 16384, so a shape that does not reach
+    config.put produces a VM that runs the labs slowly rather than failing."""
+    api_main = _load_api_main()
+    choice = api_main.TemplateChoice(
+        template_id=2280, snapshot_name="", cores=8, memory_mb=24576
+    )
+    cfg = _clone_capturing_config(api_main, choice)
+
+    assert cfg["cores"] == 8
+    assert cfg["memory"] == 24576
+
+
+def test_sockets_is_pinned_so_cores_is_the_whole_vcpu_count():
+    """Proxmox multiplies sockets by cores. Without pinning, cores=8 against
+    a two-socket template yields 16 vCPUs, which overcommits the host at the
+    concurrency CSC-228 plans for."""
+    api_main = _load_api_main()
+    choice = api_main.TemplateChoice(
+        template_id=2280, snapshot_name="", cores=8, memory_mb=24576
+    )
+    cfg = _clone_capturing_config(api_main, choice)
+
+    assert cfg["sockets"] == 1
+
+
+def test_a_course_without_a_shape_keeps_the_deployment_default():
+    """Additive, exactly as 006 is. Every course in production is unmapped
+    on the day this ships and must clone at the size it clones today."""
+    api_main = _load_api_main()
+    choice = api_main.TemplateChoice(template_id=PILOT_TEMPLATE, snapshot_name="")
+    cfg = _clone_capturing_config(api_main, choice)
+
+    assert cfg["cores"] == api_main.VM_VCPUS
+    assert cfg["memory"] == api_main.VM_RAM_MB
+
+
+def test_a_row_predating_the_shape_columns_resolves_to_no_shape():
+    """A database still on 006 returns rows without cores or memory_mb.
+    Subscripting them raises, so the absence must read as "no shape stated"
+    rather than failing the launch."""
+    api_main = _load_api_main()
+    assert api_main._optional_column({"template_id": 501}, "cores") is None
+    assert api_main._optional_column({"template_id": 501}, "memory_mb") is None

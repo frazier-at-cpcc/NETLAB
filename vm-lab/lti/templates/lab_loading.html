@@ -298,6 +298,12 @@
                             </button>
                         </div>
 
+                        <!-- Persistence notice. Set from the session's own
+                             home_attached value, so it states what is true
+                             of this session rather than of the course. -->
+                        <div id="persistence-notice" style="display: none;"
+                             class="text-xs rounded-lg p-3 border"></div>
+
                         <!-- Help Text -->
                         <div class="text-xs text-slate-500 space-y-1 bg-slate-50 rounded-lg p-3">
                             <p><strong class="text-slate-700">Recreate:</strong> Destroys current VM and creates a fresh one.</p>
@@ -578,6 +584,8 @@
                 return;
             }
 
+            renderPersistenceNotice(data.persistent_home);
+
             if (data.ready && data.url) {
                 showState('running');
                 document.getElementById('open-terminal-btn').href = data.url;
@@ -735,12 +743,37 @@
             }
         }
 
+        let persistentHome = false;
+
+        function renderPersistenceNotice(isPersistent) {
+            persistentHome = Boolean(isPersistent);
+            const el = document.getElementById('persistence-notice');
+            if (!el) { return; }
+            if (persistentHome) {
+                el.className = 'text-xs rounded-lg p-3 border bg-emerald-50 ' +
+                    'text-emerald-800 border-emerald-200';
+                el.innerHTML = '<strong>Your files are saved.</strong> ' +
+                    'Work you keep in <code>~/csc228</code> stays available ' +
+                    'in your next session. Anything stored outside ' +
+                    '<code>~/csc228</code> is removed when this lab ends.';
+            } else {
+                el.className = 'text-xs rounded-lg p-3 border bg-amber-50 ' +
+                    'text-amber-900 border-amber-200';
+                el.innerHTML = '<strong>Files are not saved between ' +
+                    'sessions.</strong> Download anything you want to keep ' +
+                    'before you stop the lab or close this page.';
+            }
+            el.style.display = 'block';
+        }
+
         function confirmStop() {
-            showModal(
-                'Stop Lab?',
-                'This will shut down your virtual machine. All unsaved work will be lost.',
-                'stop'
-            );
+            const body = persistentHome
+                ? 'This will shut down your virtual machine. Files in ' +
+                  '~/csc228 are kept. Anything running in the lab ends, and ' +
+                  'anything stored outside ~/csc228 is lost.'
+                : 'This will shut down your virtual machine. All unsaved ' +
+                  'work will be lost.';
+            showModal('Stop Lab?', body, 'stop');
         }
 
         function confirmRecreate() {

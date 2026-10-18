@@ -494,6 +494,14 @@ function showDemoVMActive(data) {
 
     document.getElementById('demo-vm-ip').textContent = data.vm_ip || 'N/A';
     document.getElementById('demo-vm-link').href = data.url || '#';
+
+    // The student view is a page navigation rather than a fetch, so it cannot
+    // carry the Authorization header. The token travels as _token, the same
+    // way the recording playback URL above does.
+    const token = window.dashboardConfig?.token || '';
+    const base = window.dashboardConfig?.apiBase || '';
+    document.getElementById('student-view-link').href =
+        `${base}/instructor/student-view?_token=${encodeURIComponent(token)}`;
 }
 
 async function launchDemoVM() {
