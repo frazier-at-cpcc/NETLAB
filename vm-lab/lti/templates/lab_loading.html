@@ -458,7 +458,11 @@
                 course_id: "{{ course_id | default('') }}",
                 course_title: "{{ course_title | default('') }}",
                 assignment_id: "{{ assignment_id | default('') }}",
-                assignment_title: "{{ assignment_title | default('') }}"
+                assignment_title: "{{ assignment_title | default('') }}",
+                // Posted explicitly because the session cookie is not sent
+                // from inside the Brightspace iframe. Without this the slug
+                // is the one launch field that never reaches provisioning.
+                lab_slug: "{{ lab_slug | default('') }}"
             }
         };
 

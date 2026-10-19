@@ -462,6 +462,9 @@ class Session(BaseModel):
     url: str
     vm_ip: Optional[str] = None
     status: str
+    # Carried so a recreate can take the lab from the row rather than from
+    # the cookie session, which is not sent inside the Brightspace iframe.
+    lab_slug: Optional[str] = None
     user_name: Optional[str] = None
     course_title: Optional[str] = None
     assignment_title: Optional[str] = None
@@ -2162,7 +2165,7 @@ async def get_session_by_key(session_key: str):
 
     row = await db.fetchrow(
         """
-        SELECT session_id, url, vm_ip, status, user_name, course_title,
+        SELECT session_id, url, vm_ip, status, user_name, course_title, lab_slug,
                assignment_title, created_at, expires_at
         FROM vm_sessions
         WHERE course_session_key = $1
@@ -2173,7 +2176,7 @@ async def get_session_by_key(session_key: str):
     if not row:
         row = await db.fetchrow(
             """
-            SELECT session_id, url, vm_ip, status, user_name, course_title,
+            SELECT session_id, url, vm_ip, status, user_name, course_title, lab_slug,
                    assignment_title, created_at, expires_at
             FROM vm_sessions
             WHERE session_key = $1
@@ -2402,7 +2405,7 @@ async def get_session_by_id(session_id: str):
 
     row = await db.fetchrow(
         """
-        SELECT session_id, url, vm_ip, status, user_name, course_title,
+        SELECT session_id, url, vm_ip, status, user_name, course_title, lab_slug,
                assignment_title, created_at, expires_at
         FROM vm_sessions
         WHERE session_id = $1
@@ -3067,7 +3070,7 @@ async def list_sessions(
     offset_param = param_count
 
     query = f"""
-        SELECT session_id, url, vm_ip, status, user_name, course_title,
+        SELECT session_id, url, vm_ip, status, user_name, course_title, lab_slug,
                assignment_title, created_at, expires_at
         FROM vm_sessions
         WHERE {where_clause}

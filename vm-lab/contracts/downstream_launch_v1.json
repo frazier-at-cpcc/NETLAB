@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "owner": "broker",
+  "description": "What the broker guarantees a downstream LTI 1.1 provider receives. The broker produces these parameters; LabsConnect consumes them. Both sides test against this file, because the failure this exists to prevent lived in the gap between two internally consistent, well-tested codebases: the broker sent resource_link_id and LabsConnect read custom_lab_slug, so no grade cell was ever written and two courses lost a term of passback with nothing reporting it.",
+  "required": [
+    "lti_message_type",
+    "lti_version",
+    "resource_link_id",
+    "context_id",
+    "user_id",
+    "roles",
+    "custom_lab_slug"
+  ],
+  "required_when_provider_grades": [
+    "lis_result_sourcedid",
+    "lis_outcome_service_url"
+  ],
+  "notes": {
+    "custom_lab_slug": "The provider's own name for the lab, from the route's provider_resource_id. A provider cannot identify the lab from resource_link_id, which is a broker route UUID it has never been told the meaning of. Omitted only when a route carries no slug.",
+    "resource_link_id": "The broker's route UUID. Stable per link, meaningless to the provider on its own.",
+    "user_id": "The upstream subject, forwarded unchanged, so it is stable across sections and terms.",
+    "tool_consumer_instance_guid": "Always the literal 'ltibroker'. LabsConnect's persistent-home key derivation depends on it being stable; see HOME_KEY_ISSUER.",
+    "lis_result_sourcedid": "Minted per launch. The sample value below is a placeholder, never a real token."
+  },
+  "sample": {
+    "context_id": "abc123",
+    "context_label": "NET-101",
+    "context_title": "Networking I",
+    "custom_lab_slug": "scripts-review",
+    "lis_outcome_service_url": "https://broker.example/lti11/outcome",
+    "lis_person_contact_email_primary": "ada@example.edu",
+    "lis_person_name_family": "Lovelace",
+    "lis_person_name_full": "Ada Lovelace",
+    "lis_person_name_given": "Ada",
+    "lis_result_sourcedid": "PLACEHOLDER-NOT-A-REAL-SOURCEDID",
+    "lti_message_type": "basic-lti-launch-request",
+    "lti_version": "LTI-1p0",
+    "oauth_callback": "about:blank",
+    "oauth_consumer_key": "nl-key",
+    "oauth_signature_method": "HMAC-SHA1",
+    "oauth_version": "1.0",
+    "resource_link_id": "8dd2fc25-ca5a-4c51-aaac-4e279f952fcd",
+    "resource_link_title": "Shell Scripting and the Command Line",
+    "roles": "Learner",
+    "tool_consumer_info_product_family_code": "ltibroker",
+    "tool_consumer_instance_guid": "ltibroker",
+    "user_id": "u-1"
+  }
+}

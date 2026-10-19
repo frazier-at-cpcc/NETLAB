@@ -980,6 +980,7 @@ async def provision_or_redirect(
     request.session['assignment_id'] = assignment_id
     request.session['assignment_title'] = assignment_title
     store_launch_cell_fields(request, ctx)
+    ctx_lab_slug = request.session.get('lab_slug', '')
     # The cookie above is a third-party cookie inside the LMS iframe and a
     # browser may drop it. Stash the same fields server-side so the
     # provision call that follows can persist the grade cell regardless.
@@ -1015,6 +1016,7 @@ async def provision_or_redirect(
                             "user_name": user_name,
                             "course_title": course_title,
                             "assignment_title": assignment_title,
+                            "lab_slug": ctx_lab_slug,
                             "initial_status": "running"
                         }
                     )
@@ -1031,6 +1033,7 @@ async def provision_or_redirect(
                             "user_name": user_name,
                             "course_title": course_title,
                             "assignment_title": assignment_title,
+                            "lab_slug": ctx_lab_slug,
                             "initial_status": "starting"
                         }
                     )
@@ -1054,6 +1057,7 @@ async def provision_or_redirect(
                 "user_name": user_name,
                 "course_title": course_title,
                 "assignment_title": assignment_title,
+                            "lab_slug": ctx_lab_slug,
                 "initial_status": "ready",
                 # Pass session context for the Start Lab button
                 "session_key": session_key,
@@ -1463,6 +1467,13 @@ async def provision_student_vm(request: Request):
     course_title = body.get('course_title') or request.session.get('course_title', 'Unknown Course')
     assignment_id = body.get('assignment_id') or request.session.get('assignment_id', 'default')
     assignment_title = body.get('assignment_title') or request.session.get('assignment_title', 'Lab Assignment')
+    # Body first, session second, exactly like every field above. The
+    # session alone was not enough: this page runs inside a Brightspace
+    # iframe, where the cookie is not sent cross-site. Every other launch
+    # field is rendered into the page and posted back, so the slug was the
+    # one that never arrived, and without it a launch resolves to the
+    # deployment default template with no persistent home and no channels.
+    lab_slug = body.get('lab_slug') or request.session.get('lab_slug', '')
 
     if not session_key or not user_id:
         raise HTTPException(status_code=400, detail="Missing required fields: session_key and user_id")
@@ -1480,7 +1491,7 @@ async def provision_student_vm(request: Request):
                     "user_email": user_email,
                     "user_name": user_name,
                     "course_id": course_id,
-                    "lab_slug": request.session.get('lab_slug', ''),
+                    "lab_slug": lab_slug,
                     "course_title": course_title,
                     "assignment_id": assignment_id,
                     "assignment_title": assignment_title
@@ -1570,6 +1581,9 @@ async def recreate_student_session(request: Request, session_id: str):
             or request.session.get('course_session_key')
             or session_key
         )
+        # From the row, which always has it, rather than the cookie, which
+        # the iframe does not send.
+        lab_slug = original_session.get('lab_slug') or request.session.get('lab_slug', '')
         user_id = original_session.get('user_id', '')
         user_email = original_session.get('user_email', '')
         user_name = original_session.get('user_name', '')
@@ -1595,7 +1609,7 @@ async def recreate_student_session(request: Request, session_id: str):
                     "user_email": user_email,
                     "user_name": user_name,
                     "course_id": course_id,
-                    "lab_slug": request.session.get('lab_slug', ''),
+                    "lab_slug": lab_slug,
                     "course_title": course_title,
                     "assignment_id": assignment_id,
                     "assignment_title": assignment_title
