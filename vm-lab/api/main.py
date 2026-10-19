@@ -213,6 +213,21 @@ MAX_SESSION_HOURS = 8
 # a VM while a student watches it come up.
 STUCK_SESSION_MINUTES = int(os.getenv("STUCK_SESSION_MINUTES", "30"))
 
+# The NAS VM that serves persistent homes. 0 disables them everywhere, which
+# is the state until one is configured.
+CSC228_NAS_VMID = int(os.getenv("CSC228_NAS_VMID", "0"))
+# The issuer half of the home key.
+#
+# Deliberately a deployment constant rather than anything carried on a
+# launch. The broker forwards the upstream subject unchanged as user_id, so
+# the subject half is already stable across sections and terms, but every
+# per-launch issuer candidate is a hazard: an OAuth consumer key can be
+# rotated, and rotating it would change every key and orphan every
+# student's directory while the NAS still held their work. This value exists
+# only so two deployments sharing one NAS cannot collide, and it must never
+# be changed on a running course.
+HOME_KEY_ISSUER = os.getenv("HOME_KEY_ISSUER", "ltibroker")
+
 # Docker network for ttyd containers
 DOCKER_NETWORK = "vm-lab_lab-network"
 
@@ -785,6 +800,7 @@ class TemplateChoice:
     session_hours: Optional[int] = None
     terminal_persist: bool = False
     terminal_recording: bool = True
+    persistent_home: bool = False
 
 
 COURSE_TEMPLATE_SQL = """
@@ -848,7 +864,7 @@ async def resolve_course_template(db, course_id: Optional[str]) -> TemplateChoic
 
 LAB_TEMPLATE_SQL = """
 SELECT slug_prefix, template_id, snapshot_name, cores, memory_mb,
-       session_hours, terminal_persist, terminal_recording
+       session_hours, terminal_persist, terminal_recording, persistent_home
 FROM lab_templates
 WHERE $1 LIKE slug_prefix || '%'
 ORDER BY length(slug_prefix) DESC
@@ -902,6 +918,7 @@ async def resolve_lab_template(
                 # A database still on 008 has no column; recording stays on,
                 # which is what every course does today.
                 terminal_recording=True if recording is None else bool(recording),
+                persistent_home=bool(_optional_column(row, "persistent_home")),
             )
 
     return await resolve_course_template(db, course_id)
@@ -1734,6 +1751,40 @@ async def revoke_session_access(db, session_id: str) -> None:
         )
 
 
+async def release_session_home(db: asyncpg.Pool, session_id: str):
+    """Revoke this session's NAS grant. Never raises.
+
+    The key is read back from the row rather than recomputed, so a change to
+    the derivation can never revoke a different student's directory.
+
+    A session with no key never had a home, which is every NOS session and
+    every CSC 228 session that failed to attach.
+    """
+    if not CSC228_NAS_VMID or not proxmox_api:
+        return
+    try:
+        row = await db.fetchrow(
+            "SELECT vm_ip, home_key FROM vm_sessions WHERE session_id = $1",
+            session_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not read the home key for %s: %s", session_id, type(exc).__name__
+        )
+        return
+    if not row or not row["home_key"] or not row["vm_ip"]:
+        return
+    revoked = await csc228_home.revoke_home(
+        proxmox_api, PROXMOX_NODE, CSC228_NAS_VMID, row["vm_ip"]
+    )
+    if not revoked:
+        # Worth an alarm: the export keeps serving an address that is about
+        # to be recycled onto another student's VM.
+        logger.error(
+            "Session %s: NAS grant for %s was NOT revoked", session_id, row["vm_ip"]
+        )
+
+
 async def destroy_session_internal(
     db: asyncpg.Pool, session_id: str, vm_id: int, reason: str = "ended"
 ):
@@ -1754,6 +1805,11 @@ async def destroy_session_internal(
         )
     # Revoke access before anything it names disappears.
     await revoke_session_access(db, session_id)
+
+    # Release the NAS grant before the VM that holds the mount disappears.
+    # Reached by a clean end, expiry, idle reclaim, and the stuck reaper,
+    # because this is the only teardown path.
+    await release_session_home(db, session_id)
 
     # Finalize recording before destroying container
     await finalize_recording(db, session_id)
@@ -2402,6 +2458,36 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 "UPDATE vm_sessions SET vm_ip = $2 WHERE session_id = $1",
                 session_id, vm_ip
             )
+
+            # Attach the persistent home before the terminal exists, so the
+            # student's first shell already sees it. Never raises: a lab
+            # without a home is worse than no lab, so a failure here leaves
+            # home_attached FALSE and the launch page tells the student to
+            # download their work.
+            if template_choice.persistent_home and CSC228_NAS_VMID:
+                if request.user_id:
+                    key = csc228_home.home_key(HOME_KEY_ISSUER, request.user_id)
+                    attached = await csc228_home.provision_home(
+                        proxmox_api, PROXMOX_NODE, CSC228_NAS_VMID,
+                        vmid, vm_ip, key,
+                    )
+                    await db.execute(
+                        "UPDATE vm_sessions SET home_key = $2, home_attached = $3 "
+                        "WHERE session_id = $1",
+                        session_id, key, attached,
+                    )
+                    if not attached:
+                        logger.error(
+                            "Session %s: home did not attach, continuing without it",
+                            session_id,
+                        )
+                else:
+                    # home_key refuses an empty subject rather than hashing
+                    # one, because every such student would share a directory.
+                    logger.error(
+                        "Session %s: no user id, cannot derive a home key",
+                        session_id,
+                    )
 
             # Wait for SSH port to be open
             logger.info(f"Waiting for SSH on {vm_ip}...")
