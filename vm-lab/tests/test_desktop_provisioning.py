@@ -210,7 +210,17 @@ def test_desktop_still_reports_no_record_when_none_was_written(api_main):
 
 
 def test_availability_still_carries_no_target_detail(api_main):
-    assert set(_status(api_main, [{"exists": True}])) == {"available", "reason"}
+    # The set is extended deliberately, not loosened. `supported` says
+    # whether this course has a desktop at all; it is a capability flag,
+    # carrying no token, host, port or credential. The guard that matters
+    # is the denylist below, which is what this test is really for.
+    forbidden = {
+        "token", "url", "host", "hostname", "ip", "address", "port",
+        "username", "user", "password", "secret", "connection", "target",
+    }
+    desktop = _status(api_main, [{"exists": True}])
+    assert set(desktop) == {"available", "reason", "supported"}
+    assert forbidden.isdisjoint({k.lower() for k in desktop})
 
 
 def _async_noop(journal, label):

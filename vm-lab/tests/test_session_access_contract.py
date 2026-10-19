@@ -128,7 +128,17 @@ def test_desktop_carries_nothing_but_availability_and_a_reason(monkeypatch, flag
     token, host, port, username, or password may ever appear in it."""
     api_main = _load_api_main()
     monkeypatch.setattr(api_main, "BROWSER_RDP_ENABLED", flag)
-    assert set(_status()["access"]["desktop"]) == {"available", "reason"}
+    # The set is extended deliberately, not loosened. `supported` says
+    # whether this course has a desktop at all; it is a capability flag,
+    # carrying no token, host, port or credential. The guard that matters
+    # is the denylist below, which is what this test is really for.
+    forbidden = {
+        "token", "url", "host", "hostname", "ip", "address", "port",
+        "username", "user", "password", "secret", "connection", "target",
+    }
+    desktop = _status()["access"]["desktop"]
+    assert set(desktop) == {"available", "reason", "supported"}
+    assert forbidden.isdisjoint({k.lower() for k in desktop})
 
 
 def test_session_model_also_carries_the_access_map():

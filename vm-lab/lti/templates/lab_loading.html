@@ -859,6 +859,16 @@
             if (!button || !note) return;
 
             const desktop = (accessMap && accessMap.desktop) || {};
+            // A course with no desktop loses the control entirely. Leaving a
+            // permanently disabled button reads as something broken rather
+            // than something this course does not have.
+            if (desktop.supported === false) {
+                button.classList.add('hidden');
+                note.classList.add('hidden');
+                return;
+            }
+            button.classList.remove('hidden');
+            note.classList.remove('hidden');
             if (desktop.available) {
                 button.disabled = false;
                 note.textContent = '';

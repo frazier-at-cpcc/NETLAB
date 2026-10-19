@@ -418,6 +418,9 @@ class GradeCellRequest(BaseModel):
 DESKTOP_DISABLED = "disabled"
 DESKTOP_PENDING = "pending"
 DESKTOP_NOT_PROVISIONED = "not_provisioned"
+# This course has no desktop at all, as opposed to one that has not
+# come up yet. The page hides the control rather than disabling it.
+DESKTOP_UNSUPPORTED = "unsupported"
 
 
 class TerminalAccess(BaseModel):
@@ -430,6 +433,9 @@ class DesktopAccess(BaseModel):
 
     available: bool = False
     reason: Optional[str] = None
+    # False when the course has no desktop, so the page can omit the
+    # control instead of showing one that can never work.
+    supported: bool = True
 
 
 class ChannelAccess(BaseModel):
@@ -450,7 +456,7 @@ class SessionAccess(BaseModel):
 
 def build_access(
     url: Optional[str], ready: bool, desktop_record: bool = False,
-    session_id: Optional[str] = None, channels=(),
+    session_id: Optional[str] = None, channels=(), desktop_supported: bool = True,
 ) -> SessionAccess:
     """Derive the access map from the values a response already reports.
 
@@ -458,7 +464,9 @@ def build_access(
     access.terminal.url from drifting apart as later phases fill in the
     desktop mode.
     """
-    if not BROWSER_RDP_ENABLED:
+    if not desktop_supported:
+        desktop = DesktopAccess(reason=DESKTOP_UNSUPPORTED, supported=False)
+    elif not BROWSER_RDP_ENABLED:
         desktop = DesktopAccess(reason=DESKTOP_DISABLED)
     elif not ready:
         desktop = DesktopAccess(reason=DESKTOP_PENDING)
@@ -569,6 +577,8 @@ class SessionStatus(BaseModel):
     notebooks_available: Optional[bool] = None
     # Published channel names, input to the access map.
     channels: tuple = Field(default=(), exclude=True)
+    # Whether this course has a desktop at all. Input to the access map.
+    desktop_supported: bool = Field(default=True, exclude=True)
     # Input to the access map, never part of the payload. The browser learns
     # that a desktop exists, not what the record holds.
     desktop_record: bool = Field(default=False, exclude=True)
@@ -579,6 +589,7 @@ class SessionStatus(BaseModel):
         return build_access(
             self.url, self.ready, self.desktop_record,
             session_id=self.session_id, channels=self.channels,
+            desktop_supported=self.desktop_supported,
         )
 
 
@@ -874,6 +885,8 @@ class TemplateChoice:
     nested_ssh: Optional[bool] = None
     # "key" or "password". None is the deployment password.
     ssh_auth: Optional[str] = None
+    # None means the deployment default, which offers a desktop.
+    desktop_enabled: Optional[bool] = None
     # VM-side channels this family publishes. Empty is the terminal only.
     channels: tuple = ()
 
@@ -940,7 +953,7 @@ async def resolve_course_template(db, course_id: Optional[str]) -> TemplateChoic
 LAB_TEMPLATE_SQL = """
 SELECT slug_prefix, template_id, snapshot_name, cores, memory_mb,
        session_hours, terminal_persist, terminal_recording, persistent_home,
-       ssh_user, nested_ssh, channels, ssh_auth
+       ssh_user, nested_ssh, channels, ssh_auth, desktop_enabled
 FROM lab_templates
 WHERE $1 LIKE slug_prefix || '%'
 ORDER BY length(slug_prefix) DESC
@@ -999,6 +1012,7 @@ async def resolve_lab_template(
                 nested_ssh=_optional_column(row, "nested_ssh"),
                 channels=_parse_channels(_optional_column(row, "channels")),
                 ssh_auth=_optional_column(row, "ssh_auth"),
+                desktop_enabled=_optional_column(row, "desktop_enabled"),
             )
 
     return await resolve_course_template(db, course_id)
@@ -2475,7 +2489,7 @@ async def get_session_status(session_id: str):
         SELECT session_id, url, vm_ip, status, status_message,
                user_name, course_title, assignment_title,
                created_at, expires_at, started_at, home_attached,
-               notebooks_available, channels_published
+               notebooks_available, channels_published, desktop_supported
         FROM vm_sessions
         WHERE session_id = $1
         """,
@@ -2620,6 +2634,9 @@ async def get_session_status(session_id: str):
         persistent_home=bool(_optional_column(row, "home_attached")),
         notebooks_available=_optional_column(row, "notebooks_available"),
         channels=published,
+        # Absent on an older database reads as supported, which is how every
+        # course behaved before this existed.
+        desktop_supported=_optional_column(row, "desktop_supported") is not False,
     )
 
 
@@ -3015,12 +3032,20 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 ssh_auth=template_choice.ssh_auth,
             )
 
+            desktop_supported = template_choice.desktop_enabled is not False
+            await db.execute(
+                "UPDATE vm_sessions SET desktop_supported = $2 WHERE session_id = $1",
+                session_id, desktop_supported,
+            )
+
             if container_id:
                 # Registered before the session is marked running, so the
                 # first poll that reports ready reports the desktop with it.
                 # A refusal returns False and leaves the terminal alone.
-                desktop_registered = await register_desktop_access(
-                    db, session_id, vm_ip
+                desktop_registered = (
+                    await register_desktop_access(db, session_id, vm_ip)
+                    if desktop_supported
+                    else False
                 )
 
                 await db.execute(
