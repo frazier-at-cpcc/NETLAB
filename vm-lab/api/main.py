@@ -2477,8 +2477,10 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                         session_id, key, attached,
                     )
                     if not attached:
-                        logger.error(
-                            "Session %s: home did not attach, continuing without it",
+                        logger.warning(
+                            "Session %s has no persistent home, continuing "
+                            "without it. The preceding line names the cause "
+                            "and which host to examine.",
                             session_id,
                         )
                 else:

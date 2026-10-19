@@ -258,3 +258,61 @@ def test_an_unreachable_nas_leaves_the_session_without_persistence():
     assert asyncio.run(
         home.provision_home(_Exploding(), NODE, NAS_VMID, VM_VMID, VM_IP, KEY)
     ) is False
+
+
+# --- which host to examine --------------------------------------------
+#
+# LOCAL-HOME and a hard failure point at different machines, and the log is
+# where that gets decided. Reporting both as a local home sent whoever read
+# the log to the wrong host.
+
+
+def _exec_result(module, stdout="", stderr="", exit_code=0):
+    return module.ExecResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
+
+
+@pytest.mark.anyio
+async def test_a_local_home_is_a_warning_naming_the_nas(monkeypatch, caplog):
+    import api.csc228_home as home
+
+    async def fake_exec(proxmox, node, vmid, argv):
+        return _exec_result(home, stdout="LOCAL-HOME mount failed: connection refused")
+
+    monkeypatch.setattr(home, "guest_exec", fake_exec)
+    with caplog.at_level("WARNING"):
+        assert await home.attach_home(None, "node", 2301, "172.18.8.24", "k" * 32) is False
+    record = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert record, "a local home must be reported"
+    assert "check the NAS" in record[0].getMessage()
+    assert "connection refused" in record[0].getMessage()
+
+
+@pytest.mark.anyio
+async def test_a_script_failure_is_an_error_naming_the_session_vm(monkeypatch, caplog):
+    import api.csc228_home as home
+
+    async def fake_exec(proxmox, node, vmid, argv):
+        return _exec_result(home, stderr="no such file or directory", exit_code=127)
+
+    monkeypatch.setattr(home, "guest_exec", fake_exec)
+    with caplog.at_level("WARNING"):
+        assert await home.attach_home(None, "node", 2301, "172.18.8.24", "k" * 32) is False
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert errors, "a script failure must be an error, not a warning"
+    assert "check the session VM" in errors[0].getMessage()
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+@pytest.mark.anyio
+async def test_an_unrunnable_script_is_an_error_and_does_not_raise(monkeypatch, caplog):
+    """guest-exec failing is the session VM's problem, and provisioning must
+    continue without a home rather than fail the launch."""
+    import api.csc228_home as home
+
+    async def fake_exec(proxmox, node, vmid, argv):
+        raise RuntimeError("guest agent not responding")
+
+    monkeypatch.setattr(home, "guest_exec", fake_exec)
+    with caplog.at_level("ERROR"):
+        assert await home.attach_home(None, "node", 2301, "172.18.8.24", "k" * 32) is False
+    assert any("check the session VM" in r.getMessage() for r in caplog.records)

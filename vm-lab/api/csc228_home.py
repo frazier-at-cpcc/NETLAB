@@ -149,16 +149,40 @@ async def attach_home(proxmox, node: str, vmid: int, nas_ip: str, key: str) -> b
     ATTACHED means the session persists. LOCAL-HOME means it works and does
     not persist, which the student has to be told, because silently losing a
     session's work is worse than a session that never started.
+
+    The two non-attached outcomes are logged at different severities because
+    they point at different machines. LOCAL-HOME means the script ran and
+    the NAS mount failed, so the NAS is what to examine. Anything else means
+    guest-exec or the script itself failed, so the session VM is. Reporting
+    both as a local home sent whoever reads the log to the wrong host.
     """
-    result = await guest_exec(
-        proxmox, node, vmid, [ATTACH_SCRIPT, nas_ip, NAS_EXPORT_PATH, key]
-    )
+    try:
+        result = await guest_exec(
+            proxmox, node, vmid, [ATTACH_SCRIPT, nas_ip, NAS_EXPORT_PATH, key]
+        )
+    except Exception as exc:
+        logger.error(
+            "VM %s: the attach script could not be run, check the session VM: %s",
+            vmid, type(exc).__name__,
+        )
+        return False
+
     if result.ok and result.stdout.startswith("ATTACHED"):
         logger.info("VM %s attached persistent home %s…", vmid, key[:8])
         return True
-    logger.warning(
-        "VM %s is running on a local home and will not persist: %s",
-        vmid, (result.stdout or result.stderr)[:200],
+
+    detail = (result.stdout or result.stderr or "").strip()[:200]
+    if result.ok and result.stdout.startswith("LOCAL-HOME"):
+        logger.warning(
+            "VM %s is running on a local home and will not persist. The "
+            "attach script ran and the mount failed, so check the NAS: %s",
+            vmid, detail,
+        )
+        return False
+
+    logger.error(
+        "VM %s: the attach script failed, check the session VM (exit %s): %s",
+        vmid, result.exit_code, detail,
     )
     return False
 

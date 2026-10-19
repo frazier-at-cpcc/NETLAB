@@ -85,7 +85,17 @@ def test_a_failed_attach_leaves_the_session_without_a_home():
     student to download their work."""
     m = _load()
     src = inspect.getsource(m)
-    assert "home did not attach, continuing without it" in src
+    assert "has no persistent home, continuing " in src
+
+
+def test_the_caller_does_not_assert_a_cause_it_cannot_see():
+    """Only attach_home sees the script's output, so it owns the severity
+    and the diagnosis. This line adds the session id and nothing else."""
+    m = _load()
+    src = inspect.getsource(m)
+    attach = src.split("template_choice.persistent_home and CSC228_NAS_VMID")[1]
+    assert "names the cause" in attach
+    assert "local home" not in attach
 
 
 def test_the_attach_result_is_what_sets_home_attached():
