@@ -94,3 +94,48 @@ def test_a_failure_to_list_candidates_does_not_kill_the_loop():
     src = inspect.getsource(_load_api_main().reap_stuck_sessions)
     head = src.split("for row in stuck:")[0]
     assert "except Exception" in head and "return" in head
+
+
+# --- destroying the VM itself ------------------------------------------
+#
+# Found by running a real teardown: Proxmox refused the delete with "VM 1003
+# is running - destroy failed", the error was logged and swallowed, and the
+# VM stayed on the node. The session row said destroyed while the disk and
+# the pool slot were still held. Seven orphaned student VMs had accumulated
+# against a pool of about twelve.
+
+
+def test_the_destroy_waits_for_the_vm_to_actually_stop():
+    """A fixed five-second sleep is a race a 24 GB guest loses."""
+    src = inspect.getsource(_load_api_main().destroy_vm)
+    assert "time.sleep(5)" not in src
+    assert "VM_STOP_TIMEOUT_SECONDS" in src
+    assert "if current.get('status') != 'running':" in src
+
+
+def test_a_vm_that_will_not_stop_is_reported_rather_than_deleted():
+    """Issuing the delete anyway fails and gets swallowed, which is how the
+    leak stayed invisible."""
+    src = inspect.getsource(_load_api_main().destroy_vm)
+    assert "NOT deleting" in src
+    assert "still holding a pool slot" in src
+
+
+def test_the_stop_budget_is_configurable_and_forwarded():
+    api_main = _load_api_main()
+    assert 'os.getenv("VM_STOP_TIMEOUT_SECONDS"' in inspect.getsource(api_main)
+    assert "VM_STOP_TIMEOUT_SECONDS=" in pathlib.Path("docker-compose.yml").read_text()
+
+
+def test_recording_is_not_finalized_for_a_family_that_does_not_record():
+    """It logged a duration and a null size for a file never written."""
+    api_main = _load_api_main()
+    src = inspect.getsource(api_main.destroy_session_internal)
+    assert "_session_was_recorded(db, session_id)" in src
+
+
+def test_an_unanswerable_recording_question_assumes_it_recorded():
+    """Dropping a real recording is worse than finalizing a missing one."""
+    src = inspect.getsource(_load_api_main()._session_was_recorded)
+    assert "return True" in src
+    assert "coalesce(t.terminal_recording, TRUE)" in src

@@ -128,3 +128,85 @@ def test_the_migration_only_changes_csc228():
     assert "WHERE slug_prefix = 'csc228-'" in sql
     assert "nested_ssh = FALSE" in sql
     assert "ssh_user = 'student'" in sql
+
+
+# --- how the terminal authenticates ------------------------------------
+#
+# SSH_PASSWORD is deployment-wide and carries the Red Hat Academy default.
+# The CSC 228 image does not use it, so the terminal failed to log in for
+# every CSC 228 student: the lab provisioned, the home attached, and the
+# student got a terminal that answered "Permission denied".
+
+
+def test_a_family_can_authenticate_with_the_key_instead():
+    m = _load()
+    src = inspect.getsource(m.spawn_ttyd_container)
+    assert 'use_key = ssh_auth == "key"' in src
+    assert "ssh -i {TTYD_KEY_PATH}" in src
+
+
+def test_the_password_remains_the_default_for_every_other_course():
+    """NOS 120 and NOS 220 store NULL and must keep using sshpass."""
+    m = _load()
+    src = inspect.getsource(m.spawn_ttyd_container)
+    assert "sshpass -e ssh" in src
+    sig = inspect.signature(m.spawn_ttyd_container)
+    assert sig.parameters["ssh_auth"].default is None
+
+
+def test_key_auth_refuses_to_fall_back_to_another_identity():
+    """IdentitiesOnly stops ssh trying an agent or default key, which would
+    make a misconfigured image look like it worked on one machine."""
+    m = _load()
+    assert "IdentitiesOnly=yes" in inspect.getsource(m.spawn_ttyd_container)
+
+
+def test_both_ssh_branches_use_the_chosen_credential():
+    """The nested branch and the direct branch share one prefix, so neither
+    can quietly keep using the password."""
+    m = _load()
+    src = inspect.getsource(m.spawn_ttyd_container)
+    assert src.count("{prefix} {user}@{vm_ip}") == 2
+    assert "sshpass -e ssh -t -o StrictHostKeyChecking" not in src
+
+
+def test_the_call_site_passes_the_auth_mode():
+    m = _load()
+    assert "ssh_auth=template_choice.ssh_auth," in inspect.getsource(m)
+
+
+def test_the_migration_only_switches_csc228_to_the_key():
+    sql = pathlib.Path("migrations/016_terminal_auth.sql").read_text()
+    assert "ssh_auth = 'key'" in sql
+    assert "WHERE slug_prefix = 'csc228-'" in sql
+    assert "IN ('password', 'key')" in sql
+
+
+# --- session length ----------------------------------------------------
+
+
+def test_the_request_does_not_default_over_the_family():
+    """A concrete default on the request is always truthy, so it won over
+    the family's session_hours and every CSC 228 lab expired after 4 hours
+    instead of 8. Found by running a real provision, not by a test."""
+    m = _load()
+    assert m.ProvisionRequest.model_fields["session_hours"].default is None
+
+
+def test_an_explicit_request_still_wins():
+    """A caller that genuinely asks for a length must still get it."""
+    m = _load()
+    src = inspect.getsource(m.provision_vm)
+    assert "request.session_hours or template_choice.session_hours" in src
+
+
+# --- honest logging -----------------------------------------------------
+
+
+def test_the_spawn_log_reports_what_it_actually_did():
+    """It claimed "with recording" unconditionally, including for CSC 228
+    where recording is off."""
+    m = _load()
+    src = inspect.getsource(m.spawn_ttyd_container)
+    assert "with recording" not in src
+    assert 'recording=%s, auth=%s' in src

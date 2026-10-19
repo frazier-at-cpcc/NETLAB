@@ -189,6 +189,9 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://lab:lab@localhost:5432/la
 
 # SSH configuration for ttyd
 SSH_PRIVATE_KEY_PATH = os.getenv("SSH_PRIVATE_KEY_PATH", "/app/keys/id_ed25519")
+# The same key as seen from inside the ttyd container, which mounts the key
+# directory at /keys.
+TTYD_KEY_PATH = os.getenv("TTYD_KEY_PATH", "/keys/id_ed25519")
 SSH_USER = os.getenv("SSH_USER", "kiosk")
 SSH_PASSWORD = os.getenv("SSH_PASSWORD", "redhat")  # Default RHA password
 
@@ -382,7 +385,10 @@ class ProvisionRequest(BaseModel):
     assignment_id: Optional[str] = None
     assignment_title: Optional[str] = None
     lab_slug: Optional[str] = None
-    session_hours: Optional[int] = DEFAULT_SESSION_HOURS
+    # None, not DEFAULT_SESSION_HOURS. A concrete default here is always
+    # truthy, so it silently won over the course family's session_hours and
+    # every CSC 228 lab expired after 4 hours instead of 8.
+    session_hours: Optional[int] = None
 
 
 class DesktopRedeemRequest(BaseModel):
@@ -808,6 +814,8 @@ class TemplateChoice:
     # today's behaviour exactly.
     ssh_user: Optional[str] = None
     nested_ssh: Optional[bool] = None
+    # "key" or "password". None is the deployment password.
+    ssh_auth: Optional[str] = None
     # VM-side channels this family publishes. Empty is the terminal only.
     channels: tuple = ()
 
@@ -874,7 +882,7 @@ async def resolve_course_template(db, course_id: Optional[str]) -> TemplateChoic
 LAB_TEMPLATE_SQL = """
 SELECT slug_prefix, template_id, snapshot_name, cores, memory_mb,
        session_hours, terminal_persist, terminal_recording, persistent_home,
-       ssh_user, nested_ssh, channels
+       ssh_user, nested_ssh, channels, ssh_auth
 FROM lab_templates
 WHERE $1 LIKE slug_prefix || '%'
 ORDER BY length(slug_prefix) DESC
@@ -932,6 +940,7 @@ async def resolve_lab_template(
                 ssh_user=_optional_column(row, "ssh_user"),
                 nested_ssh=_optional_column(row, "nested_ssh"),
                 channels=_parse_channels(_optional_column(row, "channels")),
+                ssh_auth=_optional_column(row, "ssh_auth"),
             )
 
     return await resolve_course_template(db, course_id)
@@ -1028,17 +1037,41 @@ def stop_vm(proxmox: ProxmoxAPI, vmid: int):
         logger.warning(f"Failed to stop VM {vmid}: {e}")
 
 
+# How long to wait for a VM to actually stop before giving up on deleting it.
+VM_STOP_TIMEOUT_SECONDS = int(os.getenv("VM_STOP_TIMEOUT_SECONDS", "60"))
+VM_STOP_POLL_SECONDS = 2
+
+
 def destroy_vm(proxmox: ProxmoxAPI, vmid: int):
-    """Destroy a VM."""
+    """Stop a VM, wait for it to actually stop, then delete it.
+
+    The wait is the point. This used to post a stop and sleep five seconds,
+    which is a race a 24 GB guest loses: Proxmox then refuses the delete with
+    "VM is running - destroy failed", the error was logged and swallowed, and
+    the VM stayed on the node forever. The session row said destroyed while
+    the disk and the pool slot were still held, so nothing reported the leak.
+    """
     logger.info(f"Destroying VM {vmid}")
     try:
-        # Stop first if running
         status = proxmox.nodes(PROXMOX_NODE).qemu(vmid).status.current.get()
         if status.get('status') == 'running':
             proxmox.nodes(PROXMOX_NODE).qemu(vmid).status.stop.post()
-            time.sleep(5)
+            deadline = time.monotonic() + VM_STOP_TIMEOUT_SECONDS
+            while True:
+                current = proxmox.nodes(PROXMOX_NODE).qemu(vmid).status.current.get()
+                if current.get('status') != 'running':
+                    break
+                if time.monotonic() >= deadline:
+                    # Deleting now would fail and be swallowed, leaving the VM
+                    # on the node with nothing saying so. Say so instead.
+                    logger.error(
+                        "VM %s did not stop within %ss, NOT deleting. It is "
+                        "still on the node and still holding a pool slot.",
+                        vmid, VM_STOP_TIMEOUT_SECONDS,
+                    )
+                    return
+                time.sleep(VM_STOP_POLL_SECONDS)
 
-        # Delete the VM
         proxmox.nodes(PROXMOX_NODE).qemu(vmid).delete()
         logger.info(f"VM {vmid} destroyed")
     except Exception as e:
@@ -1264,6 +1297,15 @@ PROBED_CHANNELS = frozenset({"jupyter"})
 # ponytail: blocking connect, called from sync spawn code. Short on purpose.
 # Move to asyncio.open_connection if spawn ever becomes async.
 CHANNEL_PROBE_TIMEOUT_SECONDS = 2
+# How long to keep waiting for a probed channel before giving up on it.
+#
+# A single probe immediately after SSH is a race, and it lost: systemd marks
+# csc228-jupyter active as soon as the process starts, while JupyterLab takes
+# longer to bind 8888. The first run of this probed four seconds after the
+# unit went active, found the port closed, withheld the route for the whole
+# session, and logged a fault on a VM that was fine.
+CHANNEL_READY_TIMEOUT_SECONDS = int(os.getenv("CHANNEL_READY_TIMEOUT_SECONDS", "90"))
+CHANNEL_READY_POLL_SECONDS = 3
 
 
 def _parse_channels(raw) -> tuple:
@@ -1283,10 +1325,28 @@ def port_open(host: str, port: int,
         return False
 
 
-def ready_channels(vm_ip: Optional[str], channels) -> list:
+def wait_for_port(host: str, port: int,
+                  timeout: float = CHANNEL_READY_TIMEOUT_SECONDS) -> bool:
+    """Poll a port until it answers or the budget runs out.
+
+    A service can be systemd-active seconds before it binds, so a single
+    probe is a race. Returns as soon as the port answers, so a healthy VM
+    costs one connect.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if port_open(host, port):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(CHANNEL_READY_POLL_SECONDS)
+
+
+def ready_channels(vm_ip: Optional[str], channels,
+                   timeout: float = CHANNEL_READY_TIMEOUT_SECONDS) -> list:
     """Narrow requested channels to the ones worth publishing.
 
-    A probed channel whose port does not answer is dropped, so the student
+    A probed channel whose port never answers is dropped, so the student
     gets a terminal rather than a route that 502s. An unprobed channel is
     always published.
 
@@ -1304,12 +1364,13 @@ def ready_channels(vm_ip: Optional[str], channels) -> list:
         if not vm_ip:
             logger.warning("No address to probe for channel %s, skipping", channel)
             continue
-        if port_open(vm_ip, VM_CHANNEL_PORTS[channel]):
+        if wait_for_port(vm_ip, VM_CHANNEL_PORTS[channel], timeout=timeout):
             ready.append(channel)
         else:
             logger.warning(
-                "Channel %s closed on %s, publishing without it",
-                channel, VM_CHANNEL_PORTS[channel],
+                "Channel %s never answered on %s within %ss, publishing "
+                "without it",
+                channel, VM_CHANNEL_PORTS[channel], timeout,
             )
     return ready
 
@@ -1410,6 +1471,7 @@ def spawn_ttyd_container(
     ssh_user: Optional[str] = None,
     nested: Optional[bool] = None,
     channels: tuple = (),
+    ssh_auth: Optional[str] = None,
 ) -> Optional[str]:
     """Spawn a ttyd container for web terminal access.
 
@@ -1451,6 +1513,15 @@ def spawn_ttyd_container(
         # nested VM and no kiosk user, so the hop fails outright.
         user = ssh_user or SSH_USER
         use_nested = NESTED_SSH_ENABLED if nested is None else nested
+        # The deployment password is the Red Hat Academy default, which the
+        # CSC 228 image does not use. Its family authenticates with the
+        # orchestrator key, already mounted into this container at /keys.
+        use_key = ssh_auth == "key"
+        ssh_opts = "-t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        if use_key:
+            prefix = f"ssh -i {TTYD_KEY_PATH} -o IdentitiesOnly=yes {ssh_opts}"
+        else:
+            prefix = f"sshpass -e ssh {ssh_opts}"
 
         if use_nested:
             # Chain SSH: first connect to outer VM, then directly to nested workstation
@@ -1458,7 +1529,7 @@ def spawn_ttyd_container(
             # Use SSHPASS env var (-e flag) for outer connection (kiosk uses password)
             # Inner connection to student@workstation uses SSH keys (no password needed)
             inner_connect = f"ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {NESTED_SSH_USER}@{NESTED_SSH_HOST}"
-            ssh_command = f"sshpass -e ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {user}@{vm_ip} {inner_connect}"
+            ssh_command = f"{prefix} {user}@{vm_ip} {inner_connect}"
             logger.info(f"Nested SSH enabled: connecting to {NESTED_SSH_USER}@{NESTED_SSH_HOST} via {user}@{vm_ip}")
             env_vars = {
                 "SSHPASS": SSH_PASSWORD,
@@ -1470,10 +1541,7 @@ def spawn_ttyd_container(
                 # -A attaches to `lab` when it exists and creates it when it
                 # does not, so a reconnect lands in the same shell.
                 remote = " tmux new-session -A -s lab"
-            ssh_command = (
-                f"sshpass -e ssh -t -o StrictHostKeyChecking=no "
-                f"-o UserKnownHostsFile=/dev/null {user}@{vm_ip}{remote}"
-            )
+            ssh_command = f"{prefix} {user}@{vm_ip}{remote}"
             env_vars = {
                 "SSHPASS": SSH_PASSWORD,
             }
@@ -1492,7 +1560,6 @@ def spawn_ttyd_container(
             # finalized on teardown. sh -c keeps the quoting identical.
             ttyd_command += ["sh", "-c", ssh_command]
 
-        # Spawn ttyd container with recording
         # Use custom image with SSH client installed
         container = docker_client.containers.run(
             "vm-lab-ttyd:latest",
@@ -1525,7 +1592,10 @@ def spawn_ttyd_container(
             vm_ip=vm_ip, channels=tuple(channels),
         )
 
-        logger.info(f"Spawned ttyd container with recording: {container_name}")
+        logger.info(
+            "Spawned ttyd container %s (recording=%s, auth=%s)",
+            container_name, "on" if record else "off", "key" if use_key else "password",
+        )
         return container.id
 
     except docker.errors.APIError as e:
@@ -1783,6 +1853,31 @@ async def revoke_session_access(db, session_id: str) -> None:
         )
 
 
+async def _session_was_recorded(db: asyncpg.Pool, session_id: str) -> bool:
+    """Whether this session's family records terminals.
+
+    Unknown counts as recorded, so a database that cannot answer keeps
+    today's behaviour rather than silently dropping a real recording.
+    """
+    try:
+        row = await db.fetchrow(
+            """
+            SELECT coalesce(t.terminal_recording, TRUE) AS recorded
+            FROM vm_sessions s
+            LEFT JOIN lab_templates t ON s.lab_slug LIKE t.slug_prefix || '%'
+            WHERE s.session_id = $1
+            """,
+            session_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not tell whether %s was recorded: %s",
+            session_id, type(exc).__name__,
+        )
+        return True
+    return True if row is None else bool(row["recorded"])
+
+
 async def release_session_home(db: asyncpg.Pool, session_id: str):
     """Revoke this session's NAS grant. Never raises.
 
@@ -1843,8 +1938,11 @@ async def destroy_session_internal(
     # because this is the only teardown path.
     await release_session_home(db, session_id)
 
-    # Finalize recording before destroying container
-    await finalize_recording(db, session_id)
+    # Finalize recording before destroying container. Skipped for a family
+    # that does not record, which otherwise logged a duration and a null
+    # size for a file that was never written.
+    if await _session_was_recorded(db, session_id):
+        await finalize_recording(db, session_id)
 
     # Remove ttyd container
     destroy_ttyd_container(session_id)
@@ -2693,6 +2791,7 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 ssh_user=template_choice.ssh_user,
                 nested=template_choice.nested_ssh,
                 channels=tuple(published_channels),
+                ssh_auth=template_choice.ssh_auth,
             )
 
             if container_id:
