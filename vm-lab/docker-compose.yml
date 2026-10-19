@@ -114,6 +114,9 @@ services:
       # The orchestrator key as the ttyd container sees it, for families
       # whose lab_templates row sets ssh_auth = 'key'.
       - TTYD_KEY_PATH=${TTYD_KEY_PATH:-/keys/id_ed25519}
+      # The key directory ON THE HOST. A bind source is resolved by the
+      # Docker daemon, so the in-container path cannot be used here.
+      - TTYD_KEY_HOST_DIR=${TTYD_KEY_HOST_DIR:-}
       # How long to wait for a probed channel to bind before dropping it.
       - CHANNEL_READY_TIMEOUT_SECONDS=${CHANNEL_READY_TIMEOUT_SECONDS:-90}
       # How long to wait for a VM to actually stop before refusing to delete

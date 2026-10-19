@@ -210,3 +210,44 @@ def test_the_spawn_log_reports_what_it_actually_did():
     src = inspect.getsource(m.spawn_ttyd_container)
     assert "with recording" not in src
     assert 'recording=%s, auth=%s' in src
+
+
+# --- the key has to be mounted from the host --------------------------
+#
+# Found by a real key login failing with "Identity file /keys/id_ed25519 not
+# accessible" while the file sat correctly in place one container away. The
+# spawn passed os.path.dirname(SSH_PRIVATE_KEY_PATH) as the bind source, but
+# that is where THIS process sees the key, inside its own container, and a
+# bind source is resolved by the daemon on the host. The host had an
+# unrelated empty /app/keys, so the mount succeeded and delivered nothing.
+
+
+def test_the_bind_source_is_a_host_path_not_the_container_path():
+    m = _load()
+    src = inspect.getsource(m.spawn_ttyd_container)
+    assert "key_host_dir: {" in src
+    assert "os.path.dirname(SSH_PRIVATE_KEY_PATH): {" not in src
+
+
+def test_a_missing_host_path_is_reported_loudly():
+    """Silently mounting an empty directory produces a terminal that cannot
+    log in, with nothing in the log pointing at the cause."""
+    m = _load()
+    src = inspect.getsource(m.spawn_ttyd_container)
+    assert "TTYD_KEY_HOST_DIR is not set" in src
+    assert "Key logins will fail" in src
+
+
+def test_the_warning_fires_only_when_a_key_is_actually_used():
+    """A password course has no key mount to get wrong."""
+    m = _load()
+    src = inspect.getsource(m.spawn_ttyd_container)
+    assert "if use_key and not TTYD_KEY_HOST_DIR:" in src
+
+
+def test_the_host_path_has_no_silent_default():
+    """Defaulting it to anything plausible is how this hid: the mount
+    succeeded and the key was absent."""
+    m = _load()
+    assert 'os.getenv("TTYD_KEY_HOST_DIR", "")' in inspect.getsource(m)
+    assert "TTYD_KEY_HOST_DIR=" in pathlib.Path("docker-compose.yml").read_text()

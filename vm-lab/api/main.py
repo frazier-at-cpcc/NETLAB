@@ -192,6 +192,15 @@ SSH_PRIVATE_KEY_PATH = os.getenv("SSH_PRIVATE_KEY_PATH", "/app/keys/id_ed25519")
 # The same key as seen from inside the ttyd container, which mounts the key
 # directory at /keys.
 TTYD_KEY_PATH = os.getenv("TTYD_KEY_PATH", "/keys/id_ed25519")
+# The key directory's path ON THE DOCKER HOST.
+#
+# This has to be configured separately and cannot be derived from
+# SSH_PRIVATE_KEY_PATH. That path is where this process sees the key, inside
+# its own container, and a bind source is resolved by the daemon on the host.
+# Passing the container path mounted an unrelated empty host directory, so
+# the terminal got no key and every key login failed with "Identity file not
+# accessible" while the file sat correctly in place one container away.
+TTYD_KEY_HOST_DIR = os.getenv("TTYD_KEY_HOST_DIR", "")
 SSH_USER = os.getenv("SSH_USER", "kiosk")
 SSH_PASSWORD = os.getenv("SSH_PASSWORD", "redhat")  # Default RHA password
 
@@ -1517,6 +1526,17 @@ def spawn_ttyd_container(
         # CSC 228 image does not use. Its family authenticates with the
         # orchestrator key, already mounted into this container at /keys.
         use_key = ssh_auth == "key"
+        # A bind source is resolved on the host, so the host path is the only
+        # correct source. Without it the mount silently yields an empty
+        # directory, which is how key auth failed the first time.
+        key_host_dir = TTYD_KEY_HOST_DIR or os.path.dirname(SSH_PRIVATE_KEY_PATH)
+        if use_key and not TTYD_KEY_HOST_DIR:
+            logger.error(
+                "TTYD_KEY_HOST_DIR is not set, so the terminal's key mount "
+                "will use the in-container path %s as a host source and the "
+                "key will be missing. Key logins will fail.",
+                key_host_dir,
+            )
         ssh_opts = "-t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
         if use_key:
             prefix = f"ssh -i {TTYD_KEY_PATH} -o IdentitiesOnly=yes {ssh_opts}"
@@ -1569,7 +1589,7 @@ def spawn_ttyd_container(
             network=DOCKER_NETWORK,
             environment=env_vars,
             volumes={
-                os.path.dirname(SSH_PRIVATE_KEY_PATH): {
+                key_host_dir: {
                     'bind': '/keys',
                     'mode': 'ro'
                 },
