@@ -9,14 +9,34 @@
         tailwind.config = {
             theme: {
                 extend: {
+                    // Central Piedmont design system. Gold on near-black,
+                    // square geometry, flat surfaces.
                     colors: {
                         cpcc: {
-                            primary: '#4A4A4A',
-                            secondary: '#F2A900',
-                            dark: '#333333',
-                            light: '#F5F5F5',
-                            gold: '#F2A900'
+                            primary: '#b4a269',      // collegiate gold
+                            'primary-70': '#c5b57f', // hover step
+                            'primary-60': '#d6c894',
+                            secondary: '#151617',    // foundational dark
+                            'secondary-90': '#1f2022',
+                            'secondary-80': '#2a2b2d',
+                            neutral: '#374151',
+                            surface: '#ffffff',
+                            'on-surface': '#151617',
+                            error: '#b91c1c'
                         }
+                    },
+                    fontFamily: {
+                        // Franklin Gothic URW is the brand voice. The stack
+                        // falls back rather than pulling a webfont, because
+                        // this page loads inside an LMS frame and a blocked
+                        // font request would leave the panel unstyled.
+                        sans: ['franklin-gothic-urw', 'Franklin Gothic',
+                               'Franklin Gothic Medium', 'Arial', 'Helvetica',
+                               'sans-serif']
+                    },
+                    borderRadius: {
+                        // rounded.none dominates; cards soften to 8px.
+                        DEFAULT: '0px', md: '8px'
                     }
                 }
             }
@@ -46,18 +66,18 @@
         }
     </style>
 </head>
-<body class="h-full overflow-hidden flex flex-col bg-gradient-to-br from-slate-900 via-slate-800 to-cpcc-dark">
+<body class="h-full overflow-hidden flex flex-col bg-cpcc-secondary font-sans">
     <!-- Header -->
-    <header class="bg-cpcc-primary shadow-lg">
+    <header class="bg-cpcc-secondary border-b-2 border-cpcc-primary">
         <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
             <div class="flex items-center space-x-3">
-                <div class="w-10 h-10 bg-cpcc-secondary rounded-lg flex items-center justify-center">
-                    <svg class="w-6 h-6 text-cpcc-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="w-10 h-10 bg-cpcc-primary rounded-md flex items-center justify-center">
+                    <svg class="w-6 h-6 text-cpcc-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
                     </svg>
                 </div>
                 <div>
-                    <h1 class="text-white font-bold text-lg">LabsConnect</h1>
+                    <h1 class="text-white font-medium text-lg">LabsConnect</h1>
                     <p class="text-cpcc-secondary text-xs font-medium">Virtual Lab Environment</p>
                 </div>
             </div>
@@ -72,9 +92,9 @@
     <main class="flex-1 min-h-0 flex items-center justify-center p-3 sm:p-4">
         <div class="w-full max-w-3xl max-h-full flex flex-col min-h-0">
             <!-- Card -->
-            <div class="bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col min-h-0">
+            <div class="bg-cpcc-surface rounded-md border border-cpcc-neutral/30 overflow-hidden flex flex-col min-h-0">
                 <!-- Card Header -->
-                <div class="bg-gradient-to-r from-cpcc-primary to-cpcc-dark px-6 py-5">
+                <div class="bg-cpcc-secondary-90 px-6 py-5 border-b-2 border-cpcc-primary">
                     <h2 id="status-title" class="text-xl font-bold text-white">Lab Environment</h2>
                     <p class="text-cpcc-secondary text-sm mt-1">{{ assignment_title }}</p>
                 </div>
@@ -84,7 +104,7 @@
                     <!-- Ready State (Start Lab) -->
                     <div id="ready-state" class="space-y-4" style="{% if initial_status != 'ready' %}display: none;{% endif %}">
                         <div class="flex justify-center">
-                            <div class="w-24 h-24 bg-cpcc-light rounded-full flex items-center justify-center">
+                            <div class="w-24 h-24 bg-cpcc-primary/15 rounded-full flex items-center justify-center">
                                 <svg class="w-12 h-12 text-cpcc-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
                                 </svg>
@@ -113,7 +133,7 @@
                         </div>
 
                         <button onclick="startLab()"
-                                class="w-full py-4 bg-gradient-to-r from-cpcc-primary to-cpcc-dark text-white font-bold text-lg rounded-xl hover:shadow-lg hover:scale-[1.02] transition-all duration-200 flex items-center justify-center gap-2">
+                                class="w-full py-4 px-6 bg-cpcc-primary hover:bg-cpcc-primary-70 text-cpcc-secondary font-medium text-lg rounded-none transition-colors flex items-center justify-center gap-2">
                             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
@@ -130,8 +150,8 @@
                                 <span class="font-medium text-slate-700">Provisioning Lab</span>
                                 <span id="progress-percent" class="font-bold text-cpcc-primary">0%</span>
                             </div>
-                            <div class="h-3 bg-slate-200 rounded-full overflow-hidden">
-                                <div id="progress-fill" class="h-full bg-gradient-to-r from-cpcc-primary to-emerald-500 rounded-full transition-all duration-500 relative progress-shine" style="width: 0%"></div>
+                            <div class="h-3 bg-cpcc-neutral/20 rounded-none overflow-hidden">
+                                <div id="progress-fill" class="h-full bg-cpcc-primary rounded-none transition-all duration-500 relative progress-shine" style="width: 0%"></div>
                             </div>
                             <p id="time-remaining" class="text-xs text-slate-500 text-right"></p>
                         </div>
@@ -276,11 +296,11 @@
                         <!-- Primary Actions -->
                         <div class="grid gap-2 sm:grid-cols-2">
                             <a href="#" id="open-terminal-btn" target="_blank"
-                               class="block w-full py-3 bg-gradient-to-r from-cpcc-primary to-cpcc-dark text-white font-bold text-center rounded-xl hover:shadow-lg hover:scale-[1.02] transition-all duration-200">
+                               class="block w-full py-3 px-6 bg-cpcc-primary hover:bg-cpcc-primary-70 text-cpcc-secondary font-medium text-center rounded-none transition-colors">
                                 Open Terminal
                             </a>
                             <button type="button" id="open-desktop-btn" onclick="openDesktop()" disabled
-                                    class="block w-full py-3 bg-white text-cpcc-dark font-bold text-center rounded-xl border-2 border-cpcc-primary hover:shadow-lg hover:scale-[1.02] transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:shadow-none disabled:hover:scale-100">
+                                    class="block w-full py-3 px-6 bg-transparent text-cpcc-on-surface font-medium text-center rounded-none border border-cpcc-primary hover:bg-cpcc-primary/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                                 Open Desktop
                             </button>
                             <p id="desktop-note" class="text-xs text-slate-500 text-center sm:col-span-2"></p>
@@ -295,11 +315,11 @@
                         <div id="channel-buttons" class="grid gap-2 sm:grid-cols-2 mb-3"></div>
 
                             <button onclick="confirmRecreate()"
-                                    class="flex-1 py-2.5 px-4 bg-amber-50 text-amber-700 font-medium rounded-lg hover:bg-amber-100 transition text-sm border border-amber-200">
+                                    class="flex-1 py-2.5 px-4 bg-transparent text-cpcc-on-surface font-medium rounded-none hover:bg-cpcc-neutral/10 transition-colors text-sm border border-cpcc-neutral/40">
                                 Recreate VM
                             </button>
                             <button onclick="confirmStop()"
-                                    class="flex-1 py-2.5 px-4 bg-red-50 text-red-700 font-medium rounded-lg hover:bg-red-100 transition text-sm border border-red-200">
+                                    class="flex-1 py-2.5 px-4 bg-transparent text-cpcc-error font-medium rounded-none hover:bg-cpcc-error/10 transition-colors text-sm border border-cpcc-error/40">
                                 Stop Lab
                             </button>
                         </div>
@@ -345,7 +365,7 @@
                         </div>
 
                         <button onclick="retryProvisioning()"
-                                class="w-full py-3 bg-cpcc-primary text-white font-bold rounded-xl hover:bg-cpcc-dark transition">
+                                class="w-full py-3 px-6 bg-cpcc-primary hover:bg-cpcc-primary-70 text-cpcc-secondary font-medium rounded-none transition-colors">
                             Try Again
                         </button>
                     </div>
@@ -400,7 +420,7 @@
                         </div>
 
                         <button onclick="window.location.reload()"
-                                class="w-full py-3 bg-cpcc-primary text-white font-bold rounded-xl hover:bg-cpcc-dark transition">
+                                class="w-full py-3 px-6 bg-cpcc-primary hover:bg-cpcc-primary-70 text-cpcc-secondary font-medium rounded-none transition-colors">
                             Start New Lab
                         </button>
                     </div>
@@ -420,7 +440,7 @@
 
     <!-- Confirmation Modal -->
     <div id="confirm-modal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 hidden">
-        <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden transform transition-all">
+        <div class="bg-cpcc-surface rounded-md border border-cpcc-neutral/30 max-w-sm w-full overflow-hidden">
             <div class="p-6">
                 <div class="flex items-center justify-center w-12 h-12 bg-red-100 rounded-full mx-auto mb-4">
                     <svg class="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -795,9 +815,10 @@
             // once the VM finishes booting shows up without a reload.
             host.innerHTML = channels.map(function (c) {
                 return '<a href="' + c.url + '" target="_blank" rel="noopener" ' +
-                    'class="block w-full text-center py-3 px-4 bg-white border ' +
-                    'border-slate-300 text-slate-800 font-semibold rounded-lg ' +
-                    'hover:bg-slate-50 transition">' + c.label + '</a>';
+                    'class="block w-full text-center py-3 px-6 bg-transparent border ' +
+                    'border-cpcc-primary text-cpcc-on-surface font-medium ' +
+                    'rounded-none hover:bg-cpcc-primary/10 transition-colors">' +
+                    c.label + '</a>';
             }).join('');
         }
 
