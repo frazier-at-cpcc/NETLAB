@@ -108,6 +108,22 @@ services:
       - LTI11_BRIGHTSPACE_SECRET=${LTI11_BRIGHTSPACE_SECRET}
       - LTI11_LTIBROKER_SECRET=${LTI11_LTIBROKER_SECRET}
       - SSH_PRIVATE_KEY_PATH=/app/keys/id_ed25519
+      # Terminal identity. These are the deployment defaults; a course
+      # family overrides them through its lab_templates row.
+      - SSH_USER=${SSH_USER:-kiosk}
+      - SSH_PASSWORD=${SSH_PASSWORD:-redhat}
+      - NESTED_SSH_ENABLED=${NESTED_SSH_ENABLED:-true}
+      - NESTED_SSH_USER=${NESTED_SSH_USER:-student}
+      - NESTED_SSH_HOST=${NESTED_SSH_HOST:-workstation}
+      - NESTED_SSH_PASSWORD=${NESTED_SSH_PASSWORD:-student}
+      - TRAEFIK_DYNAMIC_DIR=${TRAEFIK_DYNAMIC_DIR:-/app/traefik-dynamic}
+      # Session reaping
+      - STUCK_SESSION_MINUTES=${STUCK_SESSION_MINUTES:-30}
+      # Persistent homes. Unset or 0 disables them entirely.
+      - CSC228_NAS_VMID=${CSC228_NAS_VMID:-0}
+      # Never change on a running course: it rekeys every student's home
+      # directory and orphans their work on the NAS.
+      - HOME_KEY_ISSUER=${HOME_KEY_ISSUER:-ltibroker}
       - SSH_USER=${SSH_USER:-kiosk}
       - RECORDINGS_DIR=/var/lib/vm-lab/recordings
       - LAB_API_SERVICE_TOKEN=${LAB_API_SERVICE_TOKEN}

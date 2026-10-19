@@ -801,6 +801,10 @@ class TemplateChoice:
     terminal_persist: bool = False
     terminal_recording: bool = True
     persistent_home: bool = False
+    # None means use the deployment default, so a course with no row keeps
+    # today's behaviour exactly.
+    ssh_user: Optional[str] = None
+    nested_ssh: Optional[bool] = None
 
 
 COURSE_TEMPLATE_SQL = """
@@ -864,7 +868,8 @@ async def resolve_course_template(db, course_id: Optional[str]) -> TemplateChoic
 
 LAB_TEMPLATE_SQL = """
 SELECT slug_prefix, template_id, snapshot_name, cores, memory_mb,
-       session_hours, terminal_persist, terminal_recording, persistent_home
+       session_hours, terminal_persist, terminal_recording, persistent_home,
+       ssh_user, nested_ssh
 FROM lab_templates
 WHERE $1 LIKE slug_prefix || '%'
 ORDER BY length(slug_prefix) DESC
@@ -919,6 +924,8 @@ async def resolve_lab_template(
                 # which is what every course does today.
                 terminal_recording=True if recording is None else bool(recording),
                 persistent_home=bool(_optional_column(row, "persistent_home")),
+                ssh_user=_optional_column(row, "ssh_user"),
+                nested_ssh=_optional_column(row, "nested_ssh"),
             )
 
     return await resolve_course_template(db, course_id)
@@ -1387,6 +1394,8 @@ def spawn_ttyd_container(
     timing_path: str,
     persist: bool = False,
     record: bool = True,
+    ssh_user: Optional[str] = None,
+    nested: Optional[bool] = None,
 ) -> Optional[str]:
     """Spawn a ttyd container for web terminal access.
 
@@ -1423,14 +1432,20 @@ def spawn_ttyd_container(
         recording_rel_path = os.path.relpath(recording_path, RECORDINGS_DIR)
         timing_rel_path = os.path.relpath(timing_path, RECORDINGS_DIR)
 
-        if NESTED_SSH_ENABLED:
+        # The course family decides, falling back to the deployment default.
+        # The Red Hat Academy images need the nested hop. CSC 228 has no
+        # nested VM and no kiosk user, so the hop fails outright.
+        user = ssh_user or SSH_USER
+        use_nested = NESTED_SSH_ENABLED if nested is None else nested
+
+        if use_nested:
             # Chain SSH: first connect to outer VM, then directly to nested workstation
             # Nested VMs are already started and workstation is verified reachable by the provisioning process
             # Use SSHPASS env var (-e flag) for outer connection (kiosk uses password)
             # Inner connection to student@workstation uses SSH keys (no password needed)
             inner_connect = f"ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {NESTED_SSH_USER}@{NESTED_SSH_HOST}"
-            ssh_command = f"sshpass -e ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip} {inner_connect}"
-            logger.info(f"Nested SSH enabled: connecting to {NESTED_SSH_USER}@{NESTED_SSH_HOST} via {SSH_USER}@{vm_ip}")
+            ssh_command = f"sshpass -e ssh -t -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {user}@{vm_ip} {inner_connect}"
+            logger.info(f"Nested SSH enabled: connecting to {NESTED_SSH_USER}@{NESTED_SSH_HOST} via {user}@{vm_ip}")
             env_vars = {
                 "SSHPASS": SSH_PASSWORD,
             }
@@ -1443,7 +1458,7 @@ def spawn_ttyd_container(
                 remote = " tmux new-session -A -s lab"
             ssh_command = (
                 f"sshpass -e ssh -t -o StrictHostKeyChecking=no "
-                f"-o UserKnownHostsFile=/dev/null {SSH_USER}@{vm_ip}{remote}"
+                f"-o UserKnownHostsFile=/dev/null {user}@{vm_ip}{remote}"
             )
             env_vars = {
                 "SSHPASS": SSH_PASSWORD,
@@ -2504,10 +2519,15 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 return
 
             # If nested SSH is enabled, start nested VMs and wait for workstation
-            if NESTED_SSH_ENABLED:
+            terminal_user = template_choice.ssh_user or SSH_USER
+            use_nested_hop = (
+                NESTED_SSH_ENABLED if template_choice.nested_ssh is None
+                else template_choice.nested_ssh
+            )
+            if use_nested_hop:
                 # Wait for system to be fully booted (not just SSH port open)
                 logger.info(f"Waiting for system to be fully booted on {vm_ip}...")
-                login_ready = await wait_for_ssh_login(vm_ip, SSH_USER, SSH_PASSWORD, timeout=180)
+                login_ready = await wait_for_ssh_login(vm_ip, terminal_user, SSH_PASSWORD, timeout=180)
                 if not login_ready:
                     logger.error(f"SSH login not ready on {vm_ip} after timeout")
                     await db.execute(
@@ -2628,6 +2648,8 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 recording_path, timing_path,
                 persist=template_choice.terminal_persist,
                 record=template_choice.terminal_recording,
+                ssh_user=template_choice.ssh_user,
+                nested=template_choice.nested_ssh,
             )
 
             if container_id:
