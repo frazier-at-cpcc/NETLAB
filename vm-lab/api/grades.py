@@ -22,7 +22,15 @@ SELECT session_id FROM vm_sessions
 
 SELECT_CELL_SQL = """
 SELECT id FROM grade_cells
- WHERE course_session_id = $1 AND lab_slug = $2
+ WHERE (
+         course_key = (
+             SELECT course_session_key FROM vm_sessions WHERE session_id = $1
+         )
+         OR course_session_id = $1
+       )
+   AND lab_slug = $2
+ ORDER BY created_at DESC
+ LIMIT 1
 """
 
 INSERT_EVENT_SQL = """

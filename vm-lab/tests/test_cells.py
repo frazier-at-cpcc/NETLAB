@@ -82,6 +82,7 @@ def test_first_upsert_inserts():
         "https://lms.example/outcome",
         "cell-1",
         "cpcc-brightspace",
+        None,
     )
     stored = db.rows[("sess-1", "cli-review")]
     assert stored["sourcedid"] == "cell-1"
@@ -126,6 +127,7 @@ def test_second_upsert_updates_pox_fields():
         "https://lms.example/outcome-v2",
         "cell-2",
         "cpcc-brightspace",
+        None,
     )
 
 

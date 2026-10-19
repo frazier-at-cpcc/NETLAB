@@ -46,6 +46,7 @@ class FakeRedis:
 
 def _ctx(**over):
     base = dict(
+        course_session_key="guid:user:course",
         lab_slug="perms-review",
         sourcedid="SECRET-SOURCEDID",
         outcome_service_url="https://lms.example.edu/outcome",
@@ -65,6 +66,10 @@ def test_round_trip_produces_a_persistable_body():
 
     assert body == {
         "course_session_id": "vm-session-1",
+        # Carried through the stash too: a cell written from the deferred
+        # path must still be findable by course, which is the whole point
+        # of the key.
+        "course_key": "guid:user:course",
         "lab_slug": "perms-review",
         "resource_link_id": "806a69c3",
         "outcome_service_url": "https://lms.example.edu/outcome",
@@ -137,9 +142,15 @@ def test_stash_carries_no_field_beyond_the_cell():
         )
     )
     assert set(fields) == {
+        # course_session_key is a cell field, not session furniture: it is
+        # the key the cell is found by once the VM session is gone.
+        "course_session_key",
         "lab_slug", "sourcedid", "outcome_service_url",
         "resource_link_id", "consumer_key",
     }
+    # The point of the test, stated rather than implied by the set above.
+    assert "user_email" not in fields
+    assert "password" not in fields
 
 
 def test_missing_attributes_degrade_to_empty_not_attribute_error():

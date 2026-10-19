@@ -10,6 +10,7 @@ def grade_cell_body(session_id, ctx) -> dict | None:
         return None
     return {
         "course_session_id": session_id,
+        "course_key": getattr(ctx, "course_session_key", None),
         "lab_slug": ctx.lab_slug,
         "resource_link_id": ctx.resource_link_id,
         "outcome_service_url": ctx.outcome_service_url,
@@ -55,6 +56,7 @@ PENDING_CELL_PREFIX = "pending_cell:"
 PENDING_CELL_TTL_SECONDS = 4 * 3600
 
 _PENDING_FIELDS = (
+    "course_session_key",
     "lab_slug",
     "sourcedid",
     "outcome_service_url",
@@ -82,6 +84,7 @@ def ctx_from_cell_fields(fields):
     """
     fields = fields or {}
     return SimpleNamespace(
+        course_session_key=fields.get("course_session_key") or None,
         lab_slug=fields.get("lab_slug") or None,
         sourcedid=fields.get("sourcedid") or None,
         outcome_service_url=fields.get("outcome_service_url") or None,

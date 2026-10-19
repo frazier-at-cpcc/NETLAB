@@ -406,6 +406,10 @@ class DesktopRedeemRequest(BaseModel):
 
 class GradeCellRequest(BaseModel):
     course_session_id: str
+    # The stable guid:user:course value. A cell found by this survives the
+    # VM session it was created in, so a student can grade any lab they
+    # have opened from whichever session they are in.
+    course_key: Optional[str] = None
     lab_slug: Optional[str] = None
     resource_link_id: Optional[str] = None
     outcome_service_url: Optional[str] = None
@@ -2331,6 +2335,7 @@ async def upsert_cell(body: GradeCellRequest, background_tasks: BackgroundTasks)
     cell_id = await upsert_grade_cell(
         db,
         course_session_id=body.course_session_id,
+        course_key=body.course_key,
         lab_slug=body.lab_slug,
         resource_link_id=body.resource_link_id or "",
         outcome_service_url=body.outcome_service_url or "",

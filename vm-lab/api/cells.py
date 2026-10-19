@@ -10,14 +10,15 @@ WITH previous AS (
 )
 INSERT INTO grade_cells (
     course_session_id, lab_slug, resource_link_id,
-    outcome_service_url, sourcedid, consumer_key
-) VALUES ($1, $2, $3, $4, $5, $6)
+    outcome_service_url, sourcedid, consumer_key, course_key
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (course_session_id, lab_slug)
 DO UPDATE SET
     resource_link_id = EXCLUDED.resource_link_id,
     outcome_service_url = EXCLUDED.outcome_service_url,
     sourcedid = EXCLUDED.sourcedid,
     consumer_key = EXCLUDED.consumer_key,
+    course_key = EXCLUDED.course_key,
     updated_at = CURRENT_TIMESTAMP
 RETURNING id, (SELECT sourcedid FROM previous) AS previous_sourcedid
 """
@@ -32,6 +33,7 @@ async def upsert_grade_cell(
     outcome_service_url,
     sourcedid,
     consumer_key,
+    course_key=None,
 ) -> int | None:
     if lab_slug is None or sourcedid is None:
         return None
@@ -43,6 +45,7 @@ async def upsert_grade_cell(
         outcome_service_url,
         sourcedid,
         consumer_key,
+        course_key,
     )
     if row is None:
         return None
