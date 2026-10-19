@@ -96,9 +96,12 @@ def test_decorative_icons_are_hidden_from_assistive_tech():
 def test_state_is_not_carried_by_colour_alone():
     """The running pill pairs its dot with the word Running."""
     body = page()
-    assert "Running" in body
-    dot = 'class="w-1.5 h-1.5 bg-emerald-600 rounded-full mr-1.5" aria-hidden="true"'
-    assert dot in body
+    # Scoped to the running state. Searching the whole page found the word
+    # inside an HTML comment first, which proved nothing.
+    block = body.split('id="running-state"')[1].split("<!-- Persistence notice")[0]
+    assert "Running" in block, "the state must be named, not only coloured"
+    assert "rounded-full" in block, "the state needs a visible marker"
+    assert 'aria-hidden="true"' in block, "and that marker must not be read out"
 
 
 # --- structure ----------------------------------------------------------

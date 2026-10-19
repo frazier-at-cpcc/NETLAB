@@ -71,16 +71,26 @@ def test_the_card_uses_the_width_of_a_wide_frame():
 def test_the_actions_sit_side_by_side_once_there_is_width():
     """Stacked full-width buttons are what made the card too tall."""
     body = page()
-    assert body.count("sm:grid-cols-2") >= 2
+    assert "sm:grid-cols-2" in body
 
 
 def test_the_channel_buttons_share_that_grid():
-    assert 'id="channel-buttons" class="grid gap-2 sm:grid-cols-2' in page()
+    """`contents` makes the injected links cells of the surrounding grid.
+    Giving the container its own grid produced a second, misaligned row
+    below the one it was meant to join."""
+    body = page()
+    assert 'id="channel-buttons" class="contents"' in body
+    grid = body.index("sm:grid-cols-2")
+    assert body.index('id="channel-buttons"') > grid, "it must sit inside the grid"
 
 
-def test_the_desktop_note_spans_the_row_rather_than_a_column():
-    assert 'id="desktop-note"' in page()
-    assert "sm:col-span-2" in page()
+def test_the_desktop_note_is_not_squeezed_into_a_column():
+    """It explains why Open Desktop is unavailable, so it needs the width
+    of the card rather than half of it. It now sits below the grid."""
+    body = page()
+    note = body.index('id="desktop-note"')
+    grid_close = body.index("</div>", body.index("sm:grid-cols-2"))
+    assert note > grid_close, "the note should follow the grid, not sit in it"
 
 
 # --- narrow frames still work -------------------------------------------

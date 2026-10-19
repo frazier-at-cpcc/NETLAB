@@ -143,3 +143,37 @@ def test_buttons_use_medium_weight_not_bold():
 def test_the_progress_bar_uses_one_accent():
     """It faded gold into emerald, which is two strong accents at once."""
     assert "to-emerald-500" not in page()
+
+
+def test_the_page_uses_one_palette():
+    """Tailwind's slate ramp beside the brand surfaces reads as two
+    products in one panel. Semantic greens and reds stay: they carry state,
+    not brand."""
+    import re
+    leftovers = re.findall(r"\bslate-\d+", page())
+    assert leftovers == [], f"off-palette classes: {sorted(set(leftovers))}"
+
+
+def test_the_utility_actions_are_quieter_than_the_primary_one():
+    """Recreate and Stop were bordered boxes the same size as Open
+    Terminal, which gave three equal-weight choices to a student who came
+    to do one thing."""
+    body = page()
+    # Found by their handlers. Slicing on comment delimiters ran past the
+    # block and matched markup from elsewhere in the file.
+    # By label, not by handler: confirmStop() is also wired to the Cancel
+    # button shown while a VM is provisioning, which is a different control
+    # with its own weight, and matching the first occurrence found that one.
+    for label in ("Recreate VM", "Stop Lab"):
+        end = body.index(f">\n                                    {label}")
+        cls = body[:end].rsplit('class="', 1)[1].split('"', 1)[0]
+        assert "underline" in cls, f"{label} should read as a text control"
+        assert "border border-" not in cls, f"{label} should not be a boxed button"
+        assert "bg-cpcc-primary" not in cls, f"{label} must not take the primary fill"
+
+
+def test_the_explanations_sit_with_the_controls_they_describe():
+    """They used to be a grey panel below, repeating the button labels."""
+    body = page()
+    assert "Destroys this VM and builds a fresh one." in body
+    assert "Relaunch from your course to start again." in body
