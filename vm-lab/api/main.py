@@ -432,13 +432,25 @@ class DesktopAccess(BaseModel):
     reason: Optional[str] = None
 
 
+class ChannelAccess(BaseModel):
+    """One VM-side service the student can open, beside the terminal."""
+
+    name: str
+    label: str
+    url: str
+
+
 class SessionAccess(BaseModel):
     terminal: TerminalAccess
     desktop: DesktopAccess
+    # Beside the terminal: JupyterLab, the Lab 7 web UI. Empty for every
+    # course that publishes no channels.
+    channels: list = []
 
 
 def build_access(
-    url: Optional[str], ready: bool, desktop_record: bool = False
+    url: Optional[str], ready: bool, desktop_record: bool = False,
+    session_id: Optional[str] = None, channels=(),
 ) -> SessionAccess:
     """Derive the access map from the values a response already reports.
 
@@ -454,7 +466,36 @@ def build_access(
         desktop = DesktopAccess(available=True)
     else:
         desktop = DesktopAccess(reason=DESKTOP_NOT_PROVISIONED)
-    return SessionAccess(terminal=TerminalAccess(url=url), desktop=desktop)
+    return SessionAccess(
+        terminal=TerminalAccess(url=url), desktop=desktop,
+        channels=build_channels(session_id, channels) if ready else [],
+    )
+
+
+# What a student sees on the button for each channel.
+VM_CHANNEL_LABELS = {"jupyter": "Open JupyterLab", "app": "Open Web UI"}
+
+
+def build_channels(session_id: Optional[str], names) -> list:
+    """Turn published channel names into openable links.
+
+    The route file and the page have to agree on the hostname, so both
+    derive it the same way: one label, <channel>-<session>.<domain>.
+    """
+    if not session_id:
+        return []
+    out = []
+    for name in names or ():
+        if name not in VM_CHANNEL_PORTS:
+            continue
+        out.append(
+            ChannelAccess(
+                name=name,
+                label=VM_CHANNEL_LABELS.get(name, f"Open {name}"),
+                url=f"https://{name}-{session_id}.{DOMAIN}",
+            )
+        )
+    return out
 
 
 class Session(BaseModel):
@@ -526,6 +567,8 @@ class SessionStatus(BaseModel):
     # None when the course does not use notebooks, so the page stays silent
     # for every course that never had them.
     notebooks_available: Optional[bool] = None
+    # Published channel names, input to the access map.
+    channels: tuple = Field(default=(), exclude=True)
     # Input to the access map, never part of the payload. The browser learns
     # that a desktop exists, not what the record holds.
     desktop_record: bool = Field(default=False, exclude=True)
@@ -533,7 +576,10 @@ class SessionStatus(BaseModel):
     @computed_field
     @property
     def access(self) -> SessionAccess:
-        return build_access(self.url, self.ready, self.desktop_record)
+        return build_access(
+            self.url, self.ready, self.desktop_record,
+            session_id=self.session_id, channels=self.channels,
+        )
 
 
 # ============================================================================
@@ -2429,7 +2475,7 @@ async def get_session_status(session_id: str):
         SELECT session_id, url, vm_ip, status, status_message,
                user_name, course_title, assignment_title,
                created_at, expires_at, started_at, home_attached,
-               notebooks_available
+               notebooks_available, channels_published
         FROM vm_sessions
         WHERE session_id = $1
         """,
@@ -2557,6 +2603,7 @@ async def get_session_status(session_id: str):
             await db.fetchrow(access.DESKTOP_ACCESS_EXISTS_SQL, session_id)
         )
 
+    published = _parse_channels(_optional_column(row, "channels_published"))
     return SessionStatus(
         session_id=session_id,
         status=status,
@@ -2572,6 +2619,7 @@ async def get_session_status(session_id: str):
         # work, which is the safe answer when we do not know.
         persistent_home=bool(_optional_column(row, "home_attached")),
         notebooks_available=_optional_column(row, "notebooks_available"),
+        channels=published,
     )
 
 
@@ -2942,6 +2990,12 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                     "WHERE session_id = $1",
                     session_id, notebooks,
                 )
+                pass
+            await db.execute(
+                "UPDATE vm_sessions SET channels_published = $2 WHERE session_id = $1",
+                session_id, ",".join(published_channels),
+            )
+            if "jupyter" in template_choice.channels:
                 if not notebooks:
                     logger.error(
                         "Session %s: JupyterLab did not answer on 8888. It is "

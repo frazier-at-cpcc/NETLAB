@@ -288,6 +288,12 @@
 
                         <!-- Secondary Actions -->
                         <div class="flex gap-3">
+                        <!-- Channels published for this session: JupyterLab,
+                             and the Lab 7 web UI. Rendered from the status
+                             payload so the page and the route file cannot
+                             disagree about the hostname. -->
+                        <div id="channel-buttons" class="space-y-3 mb-3"></div>
+
                             <button onclick="confirmRecreate()"
                                     class="flex-1 py-2.5 px-4 bg-amber-50 text-amber-700 font-medium rounded-lg hover:bg-amber-100 transition text-sm border border-amber-200">
                                 Recreate VM
@@ -595,6 +601,7 @@
 
             renderPersistenceNotice(data.persistent_home);
             renderNotebookNotice(data.notebooks_available);
+            renderChannels(data.access);
 
             if (data.ready && data.url) {
                 showState('running');
@@ -774,6 +781,24 @@
                     'before you stop the lab or close this page.';
             }
             el.style.display = 'block';
+        }
+
+        function renderChannels(access) {
+            const host = document.getElementById('channel-buttons');
+            if (!host) { return; }
+            const channels = (access && access.channels) || [];
+            if (!channels.length) {
+                host.innerHTML = '';
+                return;
+            }
+            // Rebuilt from the payload each poll, so a channel that appears
+            // once the VM finishes booting shows up without a reload.
+            host.innerHTML = channels.map(function (c) {
+                return '<a href="' + c.url + '" target="_blank" rel="noopener" ' +
+                    'class="block w-full text-center py-3 px-4 bg-white border ' +
+                    'border-slate-300 text-slate-800 font-semibold rounded-lg ' +
+                    'hover:bg-slate-50 transition">' + c.label + '</a>';
+            }).join('');
         }
 
         function renderNotebookNotice(available) {
