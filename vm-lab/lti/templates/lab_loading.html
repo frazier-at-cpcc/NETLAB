@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="h-full">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -46,7 +46,7 @@
         }
     </style>
 </head>
-<body class="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-cpcc-dark">
+<body class="h-full overflow-hidden flex flex-col bg-gradient-to-br from-slate-900 via-slate-800 to-cpcc-dark">
     <!-- Header -->
     <header class="bg-cpcc-primary shadow-lg">
         <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
@@ -69,10 +69,10 @@
     </header>
 
     <!-- Main Content -->
-    <main class="flex-1 flex items-center justify-center p-4 sm:p-8">
-        <div class="w-full max-w-lg">
+    <main class="flex-1 min-h-0 flex items-center justify-center p-3 sm:p-4">
+        <div class="w-full max-w-3xl max-h-full flex flex-col min-h-0">
             <!-- Card -->
-            <div class="bg-white rounded-2xl shadow-2xl overflow-hidden">
+            <div class="bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col min-h-0">
                 <!-- Card Header -->
                 <div class="bg-gradient-to-r from-cpcc-primary to-cpcc-dark px-6 py-5">
                     <h2 id="status-title" class="text-xl font-bold text-white">Lab Environment</h2>
@@ -80,9 +80,9 @@
                 </div>
 
                 <!-- Card Body -->
-                <div class="p-6 relative min-h-[350px]">
+                <div class="p-5 relative flex-1 min-h-0 overflow-y-auto">
                     <!-- Ready State (Start Lab) -->
-                    <div id="ready-state" class="space-y-6" style="{% if initial_status != 'ready' %}display: none;{% endif %}">
+                    <div id="ready-state" class="space-y-4" style="{% if initial_status != 'ready' %}display: none;{% endif %}">
                         <div class="flex justify-center">
                             <div class="w-24 h-24 bg-cpcc-light rounded-full flex items-center justify-center">
                                 <svg class="w-12 h-12 text-cpcc-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -274,16 +274,16 @@
                         </div>
 
                         <!-- Primary Actions -->
-                        <div class="space-y-2">
+                        <div class="grid gap-2 sm:grid-cols-2">
                             <a href="#" id="open-terminal-btn" target="_blank"
-                               class="block w-full py-4 bg-gradient-to-r from-cpcc-primary to-cpcc-dark text-white font-bold text-center rounded-xl hover:shadow-lg hover:scale-[1.02] transition-all duration-200">
+                               class="block w-full py-3 bg-gradient-to-r from-cpcc-primary to-cpcc-dark text-white font-bold text-center rounded-xl hover:shadow-lg hover:scale-[1.02] transition-all duration-200">
                                 Open Terminal
                             </a>
                             <button type="button" id="open-desktop-btn" onclick="openDesktop()" disabled
-                                    class="block w-full py-4 bg-white text-cpcc-dark font-bold text-center rounded-xl border-2 border-cpcc-primary hover:shadow-lg hover:scale-[1.02] transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:shadow-none disabled:hover:scale-100">
+                                    class="block w-full py-3 bg-white text-cpcc-dark font-bold text-center rounded-xl border-2 border-cpcc-primary hover:shadow-lg hover:scale-[1.02] transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:shadow-none disabled:hover:scale-100">
                                 Open Desktop
                             </button>
-                            <p id="desktop-note" class="text-xs text-slate-500 text-center"></p>
+                            <p id="desktop-note" class="text-xs text-slate-500 text-center sm:col-span-2"></p>
                         </div>
 
                         <!-- Secondary Actions -->
@@ -292,7 +292,7 @@
                              and the Lab 7 web UI. Rendered from the status
                              payload so the page and the route file cannot
                              disagree about the hostname. -->
-                        <div id="channel-buttons" class="space-y-3 mb-3"></div>
+                        <div id="channel-buttons" class="grid gap-2 sm:grid-cols-2 mb-3"></div>
 
                             <button onclick="confirmRecreate()"
                                     class="flex-1 py-2.5 px-4 bg-amber-50 text-amber-700 font-medium rounded-lg hover:bg-amber-100 transition text-sm border border-amber-200">
