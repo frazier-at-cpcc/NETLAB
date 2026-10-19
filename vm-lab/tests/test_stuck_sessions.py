@@ -139,3 +139,19 @@ def test_an_unanswerable_recording_question_assumes_it_recorded():
     src = inspect.getsource(_load_api_main()._session_was_recorded)
     assert "return True" in src
     assert "coalesce(t.terminal_recording, TRUE)" in src
+
+
+def test_a_vm_removed_elsewhere_is_not_a_teardown_failure():
+    """Two live sessions had their VMs destroyed by hand in the Proxmox UI.
+    Teardown closed both rows correctly and released both students, but
+    logged "Failed to destroy VM", which sends whoever greps the log during
+    an incident after a problem that does not exist."""
+    src = inspect.getsource(_load_api_main().destroy_vm)
+    assert 'if "does not exist" in str(e):' in src
+    assert "was already gone, nothing to destroy" in src
+
+
+def test_a_real_destroy_failure_is_still_an_error():
+    """Only the already-gone case is downgraded."""
+    src = inspect.getsource(_load_api_main().destroy_vm)
+    assert 'logger.error(f"Failed to destroy VM {vmid}: {e}")' in src

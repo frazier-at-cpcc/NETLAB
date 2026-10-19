@@ -1092,7 +1092,15 @@ def destroy_vm(proxmox: ProxmoxAPI, vmid: int):
         proxmox.nodes(PROXMOX_NODE).qemu(vmid).delete()
         logger.info(f"VM {vmid} destroyed")
     except Exception as e:
-        logger.error(f"Failed to destroy VM {vmid}: {e}")
+        # A VM removed outside this service, by hand in the Proxmox UI or by
+        # another operator, is not a teardown failure: the session still
+        # closes and the student is still released. Reporting it as an error
+        # sends whoever greps the log during an incident after a problem that
+        # does not exist.
+        if "does not exist" in str(e):
+            logger.info("VM %s was already gone, nothing to destroy", vmid)
+        else:
+            logger.error(f"Failed to destroy VM {vmid}: {e}")
 
 
 def _validated_ipv4(candidate: Optional[str]) -> Optional[str]:
