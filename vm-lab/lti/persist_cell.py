@@ -102,6 +102,17 @@ def store_pending_cell(redis_client, session_key: str, ctx) -> bool:
         return False
     fields = cell_fields_from_ctx(ctx)
     if not fields["sourcedid"] or not fields["outcome_service_url"]:
+        # A lab link with no outcome information means the Brightspace item
+        # is not graded. Said once, here, rather than discovered a term
+        # later from a student reporting "no gradebook column".
+        if fields.get("lab_slug"):
+            logger.warning(
+                "NOT GRADED: lab %r launched with no outcome service "
+                "(resource_link_id=%r). Associate the Brightspace item with "
+                "a grade item or no score can ever be returned.",
+                fields.get("lab_slug"),
+                fields.get("resource_link_id") or "<none>",
+            )
         return False
     try:
         redis_client.setex(key, PENDING_CELL_TTL_SECONDS, json.dumps(fields))

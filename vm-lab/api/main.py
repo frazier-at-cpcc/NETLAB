@@ -2241,6 +2241,27 @@ async def _run_lrs_backfill(cell_id: int) -> None:
 async def upsert_cell(body: GradeCellRequest, background_tasks: BackgroundTasks):
     """Persist or update a POX grade cell for a course session."""
     if not body.lab_slug or not body.sourcedid:
+        # Two very different situations, and telling them apart is the whole
+        # point. An access link that names no lab was never going to grade
+        # anything. A LAB link that carries no sourcedid means the
+        # Brightspace item is not graded, which silently costs every student
+        # in the course every grade for that lab: `lab grade` reports "no
+        # gradebook column" and nothing else says why. A whole NOS 220 term
+        # passed that way.
+        if body.lab_slug and not body.sourcedid:
+            logger.warning(
+                "NOT GRADED: the launch for lab %r (resource_link_id=%r) "
+                "carried no sourcedid, so no grade can be passed back. The "
+                "Brightspace item for this lab is not associated with a "
+                "grade item. Fix it in the course, not here.",
+                body.lab_slug, body.resource_link_id or "<none>",
+            )
+        else:
+            logger.info(
+                "Launch carried no lab slug (resource_link_id=%r), so there "
+                "is nothing to grade. Normal for an access link.",
+                body.resource_link_id or "<none>",
+            )
         return Response(status_code=204)
 
     db = await get_db()
