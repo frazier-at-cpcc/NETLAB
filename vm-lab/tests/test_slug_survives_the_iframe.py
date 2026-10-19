@@ -115,3 +115,28 @@ def test_an_empty_slug_still_resolves_to_the_deployment_default():
 
     src = inspect.getsource(m.resolve_lab_template)
     assert "if lab_slug:" in src
+
+
+# --- the student has to know which lab they launched --------------------
+
+
+def test_the_page_states_the_command_that_will_be_graded():
+    """A link titled "Comprehensive Review: Run Containers" is
+    compreview-review4. Graded as compreview-review1 it writes to nothing,
+    and the only feedback is "no gradebook column". The title is prose; the
+    slug is what the student types."""
+    page = PAGE.read_text()
+    assert "lab grade {{ lab_slug }}" in page
+
+
+def test_it_is_shown_only_when_there_is_a_slug():
+    """An access link that names no lab must not claim to grade one."""
+    page = PAGE.read_text()
+    block = page.split("This lab grades as")[0]
+    assert block.rstrip().endswith("{% if lab_slug %}") or "{% if lab_slug %}" in page
+
+
+def test_the_command_is_rendered_as_code():
+    """It is meant to be copied verbatim."""
+    page = PAGE.read_text()
+    assert "<code" in page.split("This lab grades as")[1][:200]
