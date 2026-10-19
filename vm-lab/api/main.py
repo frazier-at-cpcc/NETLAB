@@ -448,6 +448,12 @@ class ChannelAccess(BaseModel):
     name: str
     label: str
     url: str
+    # Whether anything is listening right now. The route is published
+    # whatever the answer, because Open WebUI is started by the student
+    # during Lab 7 and the route has to be waiting when it comes up. The
+    # button is a different promise: offering one for a service that is not
+    # running sends the student to a 502.
+    reachable: bool = True
 
 
 class SessionAccess(BaseModel):
@@ -461,6 +467,7 @@ class SessionAccess(BaseModel):
 def build_access(
     url: Optional[str], ready: bool, desktop_record: bool = False,
     session_id: Optional[str] = None, channels=(), desktop_supported: bool = True,
+    channel_reachable_map=None,
 ) -> SessionAccess:
     """Derive the access map from the values a response already reports.
 
@@ -480,7 +487,10 @@ def build_access(
         desktop = DesktopAccess(reason=DESKTOP_NOT_PROVISIONED)
     return SessionAccess(
         terminal=TerminalAccess(url=url), desktop=desktop,
-        channels=build_channels(session_id, channels) if ready else [],
+        channels=(
+            build_channels(session_id, channels, channel_reachable_map)
+            if ready else []
+        ),
     )
 
 
@@ -488,7 +498,44 @@ def build_access(
 VM_CHANNEL_LABELS = {"jupyter": "Open JupyterLab", "app": "Open Web UI"}
 
 
-def build_channels(session_id: Optional[str], names) -> list:
+# Reachability is asked for on every status poll, which is every two
+# seconds, so the answer is cached briefly. Short enough that a service the
+# student starts mid-lab shows up within one or two polls.
+CHANNEL_REACHABLE_TTL_SECONDS = 8
+CHANNEL_REACHABLE_TIMEOUT_SECONDS = 0.4
+_channel_reachable_cache: dict = {}
+
+
+async def channel_reachable(vm_ip: Optional[str], port: int, *, key) -> bool:
+    """Whether a VM-side port accepts a connection. Never raises.
+
+    Async rather than the blocking probe used at provision time, because
+    this runs inside the request path of a poll the page makes constantly.
+    """
+    if not vm_ip:
+        return False
+    now = time.monotonic()
+    cached = _channel_reachable_cache.get(key)
+    if cached and cached[0] > now:
+        return cached[1]
+    try:
+        fut = asyncio.open_connection(vm_ip, port)
+        reader, writer = await asyncio.wait_for(
+            fut, timeout=CHANNEL_REACHABLE_TIMEOUT_SECONDS
+        )
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        answer = True
+    except Exception:
+        answer = False
+    _channel_reachable_cache[key] = (now + CHANNEL_REACHABLE_TTL_SECONDS, answer)
+    return answer
+
+
+def build_channels(session_id: Optional[str], names, reachable=None) -> list:
     """Turn published channel names into openable links.
 
     The route file and the page have to agree on the hostname, so both
@@ -505,6 +552,7 @@ def build_channels(session_id: Optional[str], names) -> list:
                 name=name,
                 label=VM_CHANNEL_LABELS.get(name, f"Open {name}"),
                 url=f"https://{name}-{session_id}.{DOMAIN}",
+                reachable=True if reachable is None else bool(reachable.get(name)),
             )
         )
     return out
@@ -583,6 +631,8 @@ class SessionStatus(BaseModel):
     channels: tuple = Field(default=(), exclude=True)
     # Whether this course has a desktop at all. Input to the access map.
     desktop_supported: bool = Field(default=True, exclude=True)
+    # Per-channel reachability, input to the access map.
+    channel_reachable: dict = Field(default_factory=dict, exclude=True)
     # Input to the access map, never part of the payload. The browser learns
     # that a desktop exists, not what the record holds.
     desktop_record: bool = Field(default=False, exclude=True)
@@ -594,6 +644,7 @@ class SessionStatus(BaseModel):
             self.url, self.ready, self.desktop_record,
             session_id=self.session_id, channels=self.channels,
             desktop_supported=self.desktop_supported,
+            channel_reachable_map=self.channel_reachable,
         )
 
 
@@ -2623,6 +2674,16 @@ async def get_session_status(session_id: str):
         )
 
     published = _parse_channels(_optional_column(row, "channels_published"))
+    # Asked only once the lab is up, and only for what was published.
+    reachable = {}
+    if ready and published:
+        for name in published:
+            port = VM_CHANNEL_PORTS.get(name)
+            if port is None:
+                continue
+            reachable[name] = await channel_reachable(
+                vm_ip, port, key=(session_id, name)
+            )
     return SessionStatus(
         session_id=session_id,
         status=status,
@@ -2639,6 +2700,7 @@ async def get_session_status(session_id: str):
         persistent_home=bool(_optional_column(row, "home_attached")),
         notebooks_available=_optional_column(row, "notebooks_available"),
         channels=published,
+        channel_reachable=reachable,
         # Absent on an older database reads as supported, which is how every
         # course behaved before this existed.
         desktop_supported=_optional_column(row, "desktop_supported") is not False,

@@ -114,3 +114,72 @@ def test_a_session_with_no_channels_renders_nothing():
     block = page.split("function renderChannels(access)")[1][:600]
     assert "if (!channels.length)" in block
     assert "host.innerHTML = ''" in block
+
+
+# --- a button is a promise the service is up ----------------------------
+#
+# The route publishes whatever the answer, because Open WebUI is started by
+# the student during Lab 7 and the route has to be waiting when it comes
+# up. A button is a different promise: offering one for a service that is
+# not running sends the student to a 502, which is what happened on
+# app-1vvawfk1 during Lab 0, where Open WebUI is never used at all.
+
+
+def test_an_unreachable_channel_is_not_offered():
+    m = _load()
+    links = m.build_channels("abc", ("jupyter", "app"), {"jupyter": True, "app": False})
+    assert [c.name for c in links] == ["jupyter", "app"]
+    assert [c.reachable for c in links] == [True, False]
+
+
+def test_the_page_hides_what_is_not_answering():
+    page = PAGE.read_text()
+    block = page.split("function renderChannels(access)")[1].split("\n        function ")[0]
+    assert "c.reachable !== false" in block
+
+
+def test_the_route_is_still_published_for_an_unreachable_channel():
+    """Dropping the route would mean Open WebUI never works, because the
+    student starts it after the session is already running."""
+    m = _load()
+    src = inspect.getsource(m.write_traefik_route)
+    assert "reachable" not in src
+
+
+def test_reachability_is_cached_so_polling_stays_cheap():
+    """The page polls every two seconds."""
+    m = _load()
+    assert m.CHANNEL_REACHABLE_TTL_SECONDS >= 5
+    assert m.CHANNEL_REACHABLE_TIMEOUT_SECONDS <= 1
+
+
+def test_the_probe_does_not_block_the_event_loop():
+    """It runs inside the request path of a constant poll."""
+    m = _load()
+    src = inspect.getsource(m.channel_reachable)
+    assert "asyncio.open_connection" in src
+    assert "asyncio.wait_for" in src
+
+
+def test_an_unknown_address_is_simply_unreachable():
+    m = _load()
+    src = inspect.getsource(m.channel_reachable)
+    assert "if not vm_ip:" in src
+    assert "return False" in src
+
+
+def test_the_status_endpoint_asks_whether_each_channel_answers():
+    """Modelling reachability is useless if nothing populates it; the map
+    would stay empty and every channel would default to offered."""
+    m = _load()
+    src = inspect.getsource(m.get_session_status)
+    assert "if ready and published:" in src
+    assert "await channel_reachable(" in src
+    assert "channel_reachable=reachable," in src
+
+
+def test_reachability_is_only_asked_once_the_lab_is_up():
+    """Probing a VM that has no address yet would mark everything
+    unreachable and hide buttons that are about to work."""
+    src = inspect.getsource(_load().get_session_status)
+    assert "if ready and published:" in src

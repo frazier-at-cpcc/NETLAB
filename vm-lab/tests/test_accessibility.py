@@ -118,7 +118,10 @@ def test_dynamically_added_controls_also_show_focus():
     """The channel buttons are built in JavaScript, so they miss any sweep
     over the static markup."""
     body = page()
-    block = body.split("function renderChannels(access)")[1][:900]
+    # The whole function, not a fixed slice. A character window broke the
+    # moment the function grew, which says nothing about the page.
+    after = body.split("function renderChannels(access)")[1]
+    block = after.split("\n        function ")[0]
     # The full ring, not just the prefix: a partial set still contains
     # "focus-visible:ring" while rendering no visible indicator.
     assert "focus-visible:ring-2" in block

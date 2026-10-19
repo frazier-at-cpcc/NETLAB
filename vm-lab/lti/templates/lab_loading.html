@@ -813,7 +813,15 @@
             }
             // Rebuilt from the payload each poll, so a channel that appears
             // once the VM finishes booting shows up without a reload.
-            host.innerHTML = channels.map(function (c) {
+            // Only what is actually answering. The route stays published
+            // either way, so Open WebUI works the moment a student starts
+            // it in Lab 7, but until then a button would lead to a 502.
+            const open = channels.filter(function (c) { return c.reachable !== false; });
+            if (!open.length) {
+                host.innerHTML = '';
+                return;
+            }
+            host.innerHTML = open.map(function (c) {
                 return '<a href="' + c.url + '" target="_blank" rel="noopener" ' +
                     'class="focus:outline-none focus-visible:ring-2 focus-visible:ring-cpcc-primary focus-visible:ring-offset-2 block w-full text-center py-3 px-6 bg-transparent border ' +
                     'border-cpcc-primary text-cpcc-on-surface font-medium ' +
