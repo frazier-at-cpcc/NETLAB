@@ -112,3 +112,39 @@ def test_the_student_facing_text_uses_no_contractions():
 def test_the_migration_defaults_to_not_saved():
     sql = pathlib.Path("migrations/012_home_attached.sql").read_text()
     assert "home_attached BOOLEAN NOT NULL DEFAULT FALSE" in sql
+
+
+# --- notebooks -----------------------------------------------------------
+#
+# The notice exists because JupyterLab is enabled at boot, so a closed 8888
+# is a fault rather than a service the student has not started. The route is
+# withheld in that case, and without a notice the student would simply find
+# a missing feature.
+
+
+def test_the_page_says_nothing_when_a_course_has_no_notebooks():
+    """Tri-state. Every NOS session reports null and must see no notice."""
+    page = PAGE.read_text()
+    block = page.split("function renderNotebookNotice")[1]
+    assert "available === null" in block
+    assert "undefined" in block
+
+
+def test_the_page_says_nothing_when_notebooks_work():
+    page = PAGE.read_text()
+    block = page.split("function renderNotebookNotice")[1]
+    assert "if (available) {" in block
+
+
+def test_the_notice_tells_the_student_what_still_works_and_what_to_do():
+    """A warning that does not say the terminal still works reads as a dead
+    lab, and one without a recovery step leaves them stuck."""
+    page = PAGE.read_text()
+    assert "Notebooks are unavailable this " in page
+    assert "The terminal works." in page
+    assert "relaunch" in page
+
+
+def test_the_notebook_notice_is_refreshed_on_every_poll():
+    page = PAGE.read_text()
+    assert "renderNotebookNotice(data.notebooks_available);" in page

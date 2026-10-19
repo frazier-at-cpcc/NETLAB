@@ -505,6 +505,9 @@ class SessionStatus(BaseModel):
     # provision_home is wired, and false per-session when an attach fails,
     # so the page never promises persistence a student does not have.
     persistent_home: bool = False
+    # None when the course does not use notebooks, so the page stays silent
+    # for every course that never had them.
+    notebooks_available: Optional[bool] = None
     # Input to the access map, never part of the payload. The browser learns
     # that a desktop exists, not what the record holds.
     desktop_record: bool = Field(default=False, exclude=True)
@@ -805,6 +808,8 @@ class TemplateChoice:
     # today's behaviour exactly.
     ssh_user: Optional[str] = None
     nested_ssh: Optional[bool] = None
+    # VM-side channels this family publishes. Empty is the terminal only.
+    channels: tuple = ()
 
 
 COURSE_TEMPLATE_SQL = """
@@ -869,7 +874,7 @@ async def resolve_course_template(db, course_id: Optional[str]) -> TemplateChoic
 LAB_TEMPLATE_SQL = """
 SELECT slug_prefix, template_id, snapshot_name, cores, memory_mb,
        session_hours, terminal_persist, terminal_recording, persistent_home,
-       ssh_user, nested_ssh
+       ssh_user, nested_ssh, channels
 FROM lab_templates
 WHERE $1 LIKE slug_prefix || '%'
 ORDER BY length(slug_prefix) DESC
@@ -926,6 +931,7 @@ async def resolve_lab_template(
                 persistent_home=bool(_optional_column(row, "persistent_home")),
                 ssh_user=_optional_column(row, "ssh_user"),
                 nested_ssh=_optional_column(row, "nested_ssh"),
+                channels=_parse_channels(_optional_column(row, "channels")),
             )
 
     return await resolve_course_template(db, course_id)
@@ -1260,6 +1266,13 @@ PROBED_CHANNELS = frozenset({"jupyter"})
 CHANNEL_PROBE_TIMEOUT_SECONDS = 2
 
 
+def _parse_channels(raw) -> tuple:
+    """Split a stored channel list. NULL or empty means the terminal only."""
+    if not raw:
+        return ()
+    return tuple(name.strip() for name in str(raw).split(",") if name.strip())
+
+
 def port_open(host: str, port: int,
               timeout: float = CHANNEL_PROBE_TIMEOUT_SECONDS) -> bool:
     """True when something accepts a TCP connection. Never raises."""
@@ -1396,6 +1409,7 @@ def spawn_ttyd_container(
     record: bool = True,
     ssh_user: Optional[str] = None,
     nested: Optional[bool] = None,
+    channels: tuple = (),
 ) -> Optional[str]:
     """Spawn a ttyd container for web terminal access.
 
@@ -1506,7 +1520,10 @@ def spawn_ttyd_container(
         )
 
         # Write Traefik route config file
-        write_traefik_route(session_id, container_name, domain)
+        write_traefik_route(
+            session_id, container_name, domain,
+            vm_ip=vm_ip, channels=tuple(channels),
+        )
 
         logger.info(f"Spawned ttyd container with recording: {container_name}")
         return container.id
@@ -2146,7 +2163,8 @@ async def get_session_status(session_id: str):
         """
         SELECT session_id, url, vm_ip, status, status_message,
                user_name, course_title, assignment_title,
-               created_at, expires_at, started_at, home_attached
+               created_at, expires_at, started_at, home_attached,
+               notebooks_available
         FROM vm_sessions
         WHERE session_id = $1
         """,
@@ -2288,6 +2306,7 @@ async def get_session_status(session_id: str):
         # persistence. The page then tells the student to download their
         # work, which is the safe answer when we do not know.
         persistent_home=bool(_optional_column(row, "home_attached")),
+        notebooks_available=_optional_column(row, "notebooks_available"),
     )
 
 
@@ -2642,6 +2661,29 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 recording_path, timing_path
             )
 
+            # Probe before publishing, so a closed port leaves the student a
+            # terminal rather than a route that 502s. Off the loop because
+            # each probe is a blocking connect.
+            published_channels = await asyncio.to_thread(
+                ready_channels, vm_ip, template_choice.channels
+            )
+            if "jupyter" in template_choice.channels:
+                # Tri-state: only a family that wants notebooks gets an
+                # answer recorded, so no NOS student is warned about a
+                # feature their course never had.
+                notebooks = "jupyter" in published_channels
+                await db.execute(
+                    "UPDATE vm_sessions SET notebooks_available = $2 "
+                    "WHERE session_id = $1",
+                    session_id, notebooks,
+                )
+                if not notebooks:
+                    logger.error(
+                        "Session %s: JupyterLab did not answer on 8888. It is "
+                        "enabled at boot, so this is a fault on the VM.",
+                        session_id,
+                    )
+
             # Spawn ttyd container
             container_id = spawn_ttyd_container(
                 session_id, vm_ip, DOMAIN,
@@ -2650,6 +2692,7 @@ async def provision_vm(request: ProvisionRequest, background_tasks: BackgroundTa
                 record=template_choice.terminal_recording,
                 ssh_user=template_choice.ssh_user,
                 nested=template_choice.nested_ssh,
+                channels=tuple(published_channels),
             )
 
             if container_id:

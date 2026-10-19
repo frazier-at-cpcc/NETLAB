@@ -6,6 +6,7 @@ probed before it is published, with one deliberate exception.
 """
 
 import inspect
+import pathlib
 import socket
 import sys
 import types
@@ -124,11 +125,62 @@ def test_the_probe_timeout_is_short_because_it_blocks():
     assert api_main.CHANNEL_PROBE_TIMEOUT_SECONDS <= 5
 
 
-def test_selection_is_not_yet_wired_into_provisioning():
-    """Honest marker. Channels are still never published, so this logic is
-    inert until the go-live wiring passes vm_ip and channels through. Delete
-    this test when that lands."""
-    api_main = _load_api_main()
-    spawn = inspect.getsource(api_main.spawn_ttyd_container)
-    assert "write_traefik_route(session_id, container_name, domain)" in spawn
+def test_provisioning_probes_before_publishing():
+    """A route to a closed port 502s, which reads to a student as a broken
+    lab rather than a service that is not running."""
+    m = _load_api_main()
+    src = inspect.getsource(m)
+    assert "ready_channels, vm_ip, template_choice.channels" in src
+
+
+def test_the_probe_runs_off_the_event_loop():
+    """Each probe is a blocking connect, and provisioning is async."""
+    m = _load_api_main()
+    src = inspect.getsource(m)
+    assert "await asyncio.to_thread(\n                ready_channels" in src
+
+
+def test_the_published_channels_are_what_gets_routed():
+    """spawn no longer probes; it writes exactly what it is handed, so the
+    probe result cannot be bypassed."""
+    m = _load_api_main()
+    spawn = inspect.getsource(m.spawn_ttyd_container)
+    assert "channels=tuple(channels)" in spawn
     assert "ready_channels" not in spawn
+    assert "channels=tuple(published_channels)" in inspect.getsource(m)
+
+
+def test_the_family_decides_which_channels_exist():
+    m = _load_api_main()
+    assert m._parse_channels("jupyter,app") == ("jupyter", "app")
+    assert m._parse_channels(" jupyter , app ") == ("jupyter", "app")
+
+
+def test_a_course_with_no_channels_publishes_only_the_terminal():
+    """Every NOS course stores NULL and must stay terminal-only."""
+    m = _load_api_main()
+    assert m._parse_channels(None) == ()
+    assert m._parse_channels("") == ()
+
+
+def test_notebooks_are_reported_only_for_a_course_that_uses_them():
+    """Tri-state. A NOS student must never be told notebooks are missing
+    from a course that never had them."""
+    m = _load_api_main()
+    src = inspect.getsource(m)
+    assert 'if "jupyter" in template_choice.channels:' in src
+    assert m.SessionStatus.model_fields["notebooks_available"].default is None
+
+
+def test_a_closed_notebook_port_is_an_error_not_a_shrug():
+    """JupyterLab is enabled at boot, so a closed 8888 is a real fault."""
+    m = _load_api_main()
+    src = inspect.getsource(m)
+    assert "enabled at boot, so this is a fault on the VM" in src
+
+
+def test_the_migration_gives_csc228_both_channels():
+    sql = pathlib.Path("migrations/015_session_channels.sql").read_text()
+    assert "channels = 'jupyter,app'" in sql
+    assert "notebooks_available BOOLEAN" in sql
+    assert "WHERE slug_prefix = 'csc228-'" in sql
