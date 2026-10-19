@@ -1048,6 +1048,14 @@ def stop_vm(proxmox: ProxmoxAPI, vmid: int):
 
 # How long to wait for a VM to actually stop before giving up on deleting it.
 VM_STOP_TIMEOUT_SECONDS = int(os.getenv("VM_STOP_TIMEOUT_SECONDS", "60"))
+# Whether the orphan sweep may actually delete what it finds.
+#
+# Off by default, and deliberately so: it reports and changes nothing until
+# someone turns it on. The sweep deletes student VMs and terminal
+# containers, and a bug in the matching would destroy a lab somebody is
+# sitting in. Reporting first makes the matching auditable against a real
+# node before it is given the power to act.
+ORPHAN_REAP_ENABLED = os.getenv("ORPHAN_REAP_ENABLED", "").lower() in ("1", "true", "yes")
 VM_STOP_POLL_SECONDS = 2
 
 
@@ -1653,6 +1661,7 @@ async def cleanup_loop(db: asyncpg.Pool):
             await asyncio.sleep(300)  # Check every 5 minutes
             await cleanup_expired_sessions(db)
             await reap_stuck_sessions(db)
+            await sweep_orphans(db)
             await reclaim_idle_sessions(db)
         except asyncio.CancelledError:
             break
@@ -1725,6 +1734,112 @@ async def reap_stuck_sessions(db: asyncpg.Pool):
                 "Failed to reap stuck session %s: %s",
                 row["session_id"], type(exc).__name__,
             )
+
+
+# A session row in one of these states no longer owns its VM or container.
+ORPHAN_DEAD_STATES = ("destroyed", "error")
+
+
+async def _orphan_session_ids(db: asyncpg.Pool, candidates: list) -> set:
+    """Of these session ids, which no longer own anything.
+
+    A session is an owner unless its row says otherwise, so an id this
+    cannot resolve is treated as still owned. Deleting a VM because a query
+    failed is the one outcome worth engineering against.
+    """
+    if not candidates:
+        return set()
+    try:
+        rows = await db.fetch(
+            """
+            SELECT session_id, status
+            FROM vm_sessions
+            WHERE session_id = ANY($1::text[])
+            """,
+            candidates,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Orphan sweep could not read sessions, treating all as owned: %s",
+            type(exc).__name__,
+        )
+        return set()
+
+    known = {row["session_id"]: row["status"] for row in rows}
+    orphans = set()
+    for session_id in candidates:
+        status = known.get(session_id)
+        if status is None:
+            # No row at all. The session was deleted from the database while
+            # its VM survived, which is how most of these arise.
+            orphans.add(session_id)
+        elif status in ORPHAN_DEAD_STATES:
+            orphans.add(session_id)
+    return orphans
+
+
+async def sweep_orphans(db: asyncpg.Pool):
+    """Find student VMs and terminal containers whose session is gone.
+
+    Nothing reaped these. destroy_vm used to post a stop, sleep five
+    seconds, and issue a delete that Proxmox refused while the guest was
+    still shutting down; the error was logged and swallowed, so the VM
+    stayed on the node while the session row read destroyed. Seven had
+    accumulated against a pool of about twelve, which is most of it.
+
+    Reports by default and deletes only when ORPHAN_REAP_ENABLED is set, so
+    the matching can be checked against a real node before it is trusted to
+    act. Never raises.
+    """
+    verb = "Reaping" if ORPHAN_REAP_ENABLED else "Would reap"
+
+    if proxmox_api:
+        try:
+            guests = proxmox_api.nodes(PROXMOX_NODE).qemu.get()
+        except Exception as exc:
+            logger.warning(
+                "Orphan sweep could not list VMs: %s", type(exc).__name__
+            )
+            guests = []
+        named = {}
+        for guest in guests:
+            name = str(guest.get("name") or "")
+            if name.startswith("student-") and not guest.get("template"):
+                named[name[len("student-"):]] = guest.get("vmid")
+        for session_id in sorted(await _orphan_session_ids(db, list(named))):
+            vmid = named[session_id]
+            logger.warning(
+                "%s orphaned VM %s (student-%s): its session no longer owns it",
+                verb, vmid, session_id,
+            )
+            if ORPHAN_REAP_ENABLED:
+                await asyncio.to_thread(destroy_vm, proxmox_api, vmid)
+
+    if docker_client:
+        try:
+            containers = docker_client.containers.list(all=True)
+        except Exception as exc:
+            logger.warning(
+                "Orphan sweep could not list containers: %s", type(exc).__name__
+            )
+            containers = []
+        named = {
+            c.name[len("ttyd-"):]: c
+            for c in containers
+            if c.name.startswith("ttyd-")
+        }
+        for session_id in sorted(await _orphan_session_ids(db, list(named))):
+            logger.warning(
+                "%s orphaned terminal container ttyd-%s", verb, session_id
+            )
+            if ORPHAN_REAP_ENABLED:
+                try:
+                    named[session_id].remove(force=True)
+                except Exception as exc:
+                    logger.error(
+                        "Could not remove ttyd-%s: %s",
+                        session_id, type(exc).__name__,
+                    )
 
 
 IDLE_CANDIDATE_SQL = """

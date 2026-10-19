@@ -122,6 +122,10 @@ services:
       # How long to wait for a VM to actually stop before refusing to delete
       # it. A fixed sleep here used to race a 24 GB shutdown and leak the VM.
       - VM_STOP_TIMEOUT_SECONDS=${VM_STOP_TIMEOUT_SECONDS:-60}
+      # The orphan sweep reports what it finds and changes nothing until
+      # this is set. It deletes student VMs and terminal containers, so the
+      # matching should be audited against a real node first.
+      - ORPHAN_REAP_ENABLED=${ORPHAN_REAP_ENABLED:-}
       - SSH_PASSWORD=${SSH_PASSWORD:-redhat}
       - NESTED_SSH_ENABLED=${NESTED_SSH_ENABLED:-true}
       - NESTED_SSH_USER=${NESTED_SSH_USER:-student}
